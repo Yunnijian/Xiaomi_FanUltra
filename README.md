@@ -7,7 +7,7 @@
 [![Version](https://img.shields.io/badge/version-1.0-blue.svg)](#)
 [![LSPosed](https://img.shields.io/badge/LSPosed-API%20102-orange.svg)](#)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-HyperOS%20%2F%20MIUI-lightgrey.svg)](#)
+[![Platform](https://img.shields.io/badge/platform-HyperOS-lightgrey.svg)](#)
 
 </div>
 
@@ -31,6 +31,7 @@
 | 模块包名 | `com.mifan.kt` |
 | 当前版本 | `1.0` |
 | versionCode | `1` |
+| 系统平台 | HyperOS |
 | LSPosed API | `102` |
 | 入口类 | `com.mifan.kt.HookEntry` |
 | 开源协议 | [MIT License](LICENSE) |
@@ -52,6 +53,7 @@
 ## 目录
 
 - [核心功能](#核心功能)
+- [相关依赖](#相关依赖)
 - [特色亮点](#特色亮点)
 - [官方风扇控制流程](#官方风扇控制流程)
 - [模块工作流程](#模块工作流程)
@@ -94,6 +96,23 @@ target_level = 4
 ```
 
 最终实现比官方“高速强冷”更高的散热档位。
+
+---
+
+## 相关依赖
+
+| 依赖 / 环境 | 版本 / 说明 |
+|---|---|
+| Android Gradle Plugin | `8.13.2` |
+| Kotlin Android Plugin | `2.4.0` |
+| compileSdk / targetSdk | `34` |
+| minSdk | `29` |
+| Java / JVM Target | `17` |
+| LSPosed / libxposed API | `io.github.libxposed:api:102.0.0`，`compileOnly` |
+| 系统平台 | HyperOS |
+| 作用域 | `com.android.settings` / `com.miui.powerkeeper` / `com.android.systemui` |
+
+> `libxposed` API 仅作为编译期依赖使用，实际运行依赖 LSPosed 环境提供 Hook 能力。
 
 ---
 
@@ -499,4 +518,3 @@ PowerKeeper 进程执行 su 也存在权限限制
 ## 免责声明
 
 本项目仅用于学习、研究和个人设备调试。Hook 系统组件存在兼容性风险，使用前请确认理解相关风险。因系统版本差异、设备差异或使用不当导致的问题需自行承担。
-
