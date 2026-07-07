@@ -96,7 +96,7 @@ fan_mode=2
 fan_mode=-1
 ```
 
-该流程用于避免切回智能调频后底层 `target_level` 仍残留 `4`。
+该流程用于解决少数情况下从狂暴模式切回智能调频后，风扇依旧长时间维持最高转速的问题。
 
 ---
 
@@ -164,7 +164,7 @@ PowerKeeper 检测到刚从狂暴模式退出
         ↓
 延迟 800ms 后写回 fan_mode=-1
         ↓
-最终回到官方智能调频，target_level 不再残留 4
+最终回到官方智能调频，避免风扇长时间维持最高转速
 ```
 
 Settings 侧旧的 `fan_mode=4 -> fan_mode=2 -> fan_mode=-1` 桥接方案已验证无效，当前只保留 PowerKeeper 侧桥接。
@@ -310,7 +310,7 @@ o()
 
 - 在 `fan_mode=4` 且官方策略允许时，将 `target_level` 提升为 `4`；
 - 在 `fan_mode=4` 但官方策略不允许时，下发 `target_level=0`，避免全局常驻；
-- 在“狂暴模式 -> 智能调频”时执行 PowerKeeper 侧桥接，避免 `target_level=4` 残留。
+- 在“狂暴模式 -> 智能调频”时执行 PowerKeeper 侧桥接，解决偶发的切回智能调频后风扇依旧长时间维持最高转速的问题。
 
 关键保留逻辑：
 
@@ -412,7 +412,7 @@ target_level=4
 
 ```txt
 fan_mode=-1
-target_level 不再残留 4
+避免风扇长时间维持最高转速
 ```
 
 ---
@@ -442,8 +442,6 @@ cp -f app/build/outputs/apk/release/app-release.apk dist/fan-mode-hook-release.a
 versionName = 1.0
 versionCode = 1
 ```
-
-注意：`app/release-key.jks`、`local.properties`、APK、DOCX 和构建产物不会提交到仓库。
 
 ---
 
