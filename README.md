@@ -5,6 +5,7 @@
 **为小米 / HyperOS 散热风扇新增“狂暴模式”的轻量级 LSPosed 模块**
 
 [![Version](https://img.shields.io/badge/version-1.0-blue.svg)](#)
+[![Release](https://img.shields.io/badge/release-download-brightgreen.svg)](https://github.com/Yunnijian/Xiaomi_FanUltra/releases/tag/v1.0)
 [![LSPosed](https://img.shields.io/badge/LSPosed-API%20102-orange.svg)](https://github.com/LSPosed/LSPosed)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-HyperOS-lightgrey.svg)](#)
