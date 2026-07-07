@@ -126,6 +126,9 @@ class HookEntry : XposedModule() {
         hook(updateItems).intercept(XposedInterface.Hooker { chain ->
             // 必须在原 updateItems() 执行前补齐模型列表；原方法会基于 _secondaryItems 生成二级页。
             ensureSystemUiExtremeItemFromAdapter(chain.thisObject, classLoader)
+            // PowerKeeper 侧为了稳定退出会短暂写 fan_mode=2。
+            // 这里在 SystemUI 刷新前屏蔽该中转状态，避免控制中心从“智能调频”闪到“高速强冷”。
+            maskSystemUiBridgeStateFromAdapter(chain.thisObject)
             val result = chain.proceed()
             // 原生只能通过 titleRes 显示文本；狂暴模式复用了高速强冷资源防崩溃，所以这里二次覆盖显示标题。
             rebuildSystemUiDetailItems(chain.thisObject, classLoader)
@@ -173,6 +176,23 @@ class HookEntry : XposedModule() {
         val controller = tile.readFieldOrNull("coolingFanController") ?: return
         ensureSystemUiExtremeItem(controller, classLoader)
     }
+
+    private fun maskSystemUiBridgeStateFromAdapter(adapter: Any?) {
+        try {
+            val tile = adapter?.readFieldOrNull("this$0") ?: return
+            val controller = tile.readFieldOrNull("coolingFanController") ?: return
+            val context = readSystemUiContext(tile) ?: readSystemUiContext(controller) ?: return
+            val rawFanMode = (controller.readFieldOrNull("fanModeState") as? Number)?.toInt() ?: return
+            val displayFanMode = maskTransientBridgeFanModeForSystemUi(context.contentResolver, rawFanMode)
+            if (displayFanMode != rawFanMode) {
+                controller.writeFieldIfExists("fanModeState", Integer.valueOf(displayFanMode))
+                logInfo("SystemUI bridge fan mode masked $rawFanMode -> $displayFanMode")
+            }
+        } catch (t: Throwable) {
+            logError("Mask SystemUI bridge state failed", t)
+        }
+    }
+
     private fun normalizeSystemUiFanModeIdentities(items: List<*>) {
         // 当前不调用该实验方法，不改写 SystemUI 原生 identity。
         // 真实语义以 Settings/PowerKeeper 为准：-1=智能调频，1=静谧模式，2=高速强冷，4=狂暴模式。
@@ -210,7 +230,8 @@ class HookEntry : XposedModule() {
             val selectableClass = classLoader.loadClass("com.android.systemui.qs.QSDetailContent\$SelectableItem")
             val dividerTitle = context.stringByName("quick_settings_coolingfan_mode") ?: "风扇模式"
             val selectedIcon = context.resourceId("ic_qs_coolingfan_mode_selected", "drawable")
-            val fanMode = (controller.readFieldOrNull("fanModeState") as? Number)?.toInt() ?: -1
+            val rawFanMode = (controller.readFieldOrNull("fanModeState") as? Number)?.toInt() ?: -1
+            val fanMode = maskTransientBridgeFanModeForSystemUi(context.contentResolver, rawFanMode)
 
             val items = ArrayList<Any>()
             items.add(dividerClass.getConstructor(CharSequence::class.java).newInstance(dividerTitle))
@@ -349,6 +370,11 @@ class HookEntry : XposedModule() {
         extremeToSmartBridgeInProgress = true
         try {
             logInfo("Extreme -> smart bridge in PowerKeeper: target_level=2, fan_mode=2, then fan_mode=-1")
+            Settings.System.putLong(
+                resolver,
+                KEY_EXTREME_TO_SMART_BRIDGE_UNTIL,
+                System.currentTimeMillis() + EXTREME_TO_SMART_PK_DELAY_MS + SYSTEMUI_BRIDGE_MASK_EXTRA_MS
+            )
             writeTargetLevelByPowerKeeper(handler, writePathMethod, MODE_HIGH_VALUE.toInt())
             Settings.System.putInt(resolver, KEY_FAN_MODE, MODE_HIGH_VALUE.toInt())
             Thread {
@@ -365,6 +391,16 @@ class HookEntry : XposedModule() {
         } catch (t: Throwable) {
             extremeToSmartBridgeInProgress = false
             logError("Start extreme -> smart PowerKeeper bridge failed", t)
+        }
+    }
+
+    private fun maskTransientBridgeFanModeForSystemUi(resolver: ContentResolver?, fanMode: Int): Int {
+        if (resolver == null || fanMode != MODE_HIGH_VALUE.toInt()) return fanMode
+        return try {
+            val bridgeUntil = Settings.System.getLong(resolver, KEY_EXTREME_TO_SMART_BRIDGE_UNTIL, 0L)
+            if (bridgeUntil > System.currentTimeMillis()) MODE_SMART_VALUE.toInt() else fanMode
+        } catch (_: Throwable) {
+            fanMode
         }
     }
 
@@ -657,6 +693,7 @@ class HookEntry : XposedModule() {
         private const val KEY_SCENE_RAPID_CHARGE = "fan_mode_scene_rapid_charge"
         private const val KEY_SCENE_NAVIGATION = "fan_mode_scene_navigation"
         private const val KEY_SMART_STOP_RECORDING = "fan_smart_stop_on_recording"
+        private const val KEY_EXTREME_TO_SMART_BRIDGE_UNTIL = "mifan_extreme_to_smart_bridge_until"
         private const val TARGET_LEVEL = "target_level"
         private const val SYSTEMUI_FALLBACK_MODE_SMART_STRING_RES = 0x7f140c70
         private const val SYSTEMUI_FALLBACK_MODE_HIGH_STRING_RES = 0x7f140c6e
@@ -666,6 +703,7 @@ class HookEntry : XposedModule() {
         private const val MODE_HIGH_VALUE = "2"
         private const val MODE_EXTREME_VALUE = "4"
         private const val EXTREME_TO_SMART_PK_DELAY_MS = 800L
+        private const val SYSTEMUI_BRIDGE_MASK_EXTRA_MS = 400L
         private const val MODE_EXTREME_TITLE = "狂暴模式"
         private const val MODE_EXTREME_SUMMARY = "疾速冷却，最大幅度提升散热能力"
     }
