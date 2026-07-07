@@ -27,8 +27,8 @@ android {
         applicationId = "com.mifan.kt"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.0.1"
     }
 
     signingConfigs {
