@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:allowBackup="false"
+        android:description="@string/app_description"
+        android:extractNativeLibs="false"
+        android:hasCode="true"
+        android:icon="@drawable/ic_cooling_fan"
+        android:roundIcon="@drawable/ic_cooling_fan"
+        android:label="@string/app_name"
+        android:supportsRtl="true" />
+</manifest>

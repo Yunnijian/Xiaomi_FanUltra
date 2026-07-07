@@ -1,0 +1,28 @@
+# Gradle / Android build output
+.gradle/
+.kotlin/
+build/
+app/build/
+dist/
+
+# Local machine configuration
+local.properties
+*.iml
+.idea/
+
+# Signing keys / credentials
+*.jks
+*.keystore
+app/release-key.jks
+
+# Temporary files
+tmp/
+*.tmp
+.DS_Store
+
+# Logs
+*.log
+
+# Generated documents / binaries
+*.docx
+*.apk
