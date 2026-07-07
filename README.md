@@ -4,14 +4,14 @@
 
 **为 HyperOS 散热风扇新增「狂暴模式」的轻量级 LSPosed 模块**
 
-[![Version](https://img.shields.io/badge/version-1.0-blue.svg)](#)
-[![Release](https://img.shields.io/badge/release-download-brightgreen.svg)](https://github.com/Yunnijian/Xiaomi_FanUltra/releases/tag/v1.0)
+[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](#)
+[![Release](https://img.shields.io/badge/release-download-brightgreen.svg)](https://github.com/Yunnijian/Xiaomi_FanUltra/releases/tag/v1.0.1)
 [![LSPosed](https://img.shields.io/badge/LSPosed-API%20102-orange.svg)](https://github.com/LSPosed/LSPosed)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-HyperOS-lightgrey.svg)](#)
 
 <p>
-  <a href="https://github.com/Yunnijian/Xiaomi_FanUltra/releases/tag/v1.0"><strong>下载 Release</strong></a>
+  <a href="https://github.com/Yunnijian/Xiaomi_FanUltra/releases/tag/v1.0.1"><strong>下载 Release</strong></a>
   ·
   <a href="https://www.coolapk.com/u/1404550"><strong>酷安主页</strong></a>
   ·
@@ -36,8 +36,8 @@
 
 | 项目 | 地址 |
 |---|---|
-| GitHub Release | [Xiaomi FanUltra v1.0](https://github.com/Yunnijian/Xiaomi_FanUltra/releases/tag/v1.0) |
-| APK 文件 | [MifanUltra1.0-release.apk](https://github.com/Yunnijian/Xiaomi_FanUltra/releases/download/v1.0/MifanUltra1.0-release.apk) |
+| GitHub Release | [Xiaomi FanUltra v1.0.1](https://github.com/Yunnijian/Xiaomi_FanUltra/releases/tag/v1.0.1) |
+| APK 文件 | [MifanUltra1.0.1-release.apk](https://github.com/Yunnijian/Xiaomi_FanUltra/releases/download/v1.0.1/MifanUltra1.0.1-release.apk) |
 
 ---
 
@@ -76,8 +76,8 @@
 |---|---|
 | 模块名称 | Xiaomi_FanUltra |
 | 模块包名 | `com.mifan.kt` |
-| 当前版本 | `1.0` |
-| versionCode | `1` |
+| 当前版本 | `1.0.1` |
+| versionCode | `2` |
 | 系统平台 | HyperOS |
 | LSPosed API | `102` |
 | 入口类 | `com.mifan.kt.HookEntry` |
@@ -347,10 +347,10 @@ SystemUI 侧只新增 `identity=4`，不改写官方原生 identity，避免官�
 
 ### 安装模块
 
-从 [Release 页面](https://github.com/Yunnijian/Xiaomi_FanUltra/releases/tag/v1.0) 下载并安装：
+从 [Release 页面](https://github.com/Yunnijian/Xiaomi_FanUltra/releases/tag/v1.0.1) 下载并安装：
 
 ```txt
-MifanUltra1.0-release.apk
+MifanUltra1.0.1-release.apk
 ```
 
 当前包名：
@@ -428,14 +428,14 @@ cd xposed-fan-mode-hook
 RELEASE_STORE_PASSWORD=... RELEASE_KEY_PASSWORD=... RELEASE_KEY_ALIAS=mifan_release \
   bash ../gradle-8.13/bin/gradle assembleRelease -x :app:checkReleaseAarMetadata --rerun-tasks --stacktrace
 mkdir -p dist
-cp -f app/build/outputs/apk/release/app-release.apk dist/MifanUltra1.0-release.apk
+cp -f app/build/outputs/apk/release/app-release.apk dist/MifanUltra1.0.1-release.apk
 ```
 
 当前 release 版本：
 
 ```txt
-versionName = 1.0
-versionCode = 1
+versionName = 1.0.1
+versionCode = 2
 ```
 
 ---
