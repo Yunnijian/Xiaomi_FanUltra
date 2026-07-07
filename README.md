@@ -58,7 +58,7 @@
 - [项目信息](#-项目信息)
 - [相关依赖](#-相关依赖)
 - [核心功能](#-核心功能)
-- [官方风扇控制流程](#-官方风扇控制流程)
+- [官方风扇控制](#-官方风扇控制)
 - [模块工作流程](#-模块工作流程)
 - [逆向过程](#-逆向过程)
 - [Hook 点说明](#-hook-点说明)
@@ -131,19 +131,24 @@ target_level = 4
 
 ---
 
-## 🔄 官方风扇控制流程
+## 🔄 官方风扇控制
 
-```mermaid
-flowchart TD
-    A[用户在系统设置或控制中心选择风扇模式]
-    B[Settings / SystemUI 写入 fan_mode]
-    C[PowerKeeper 监听设置变化]
-    D[FanStateHandler 读取总开关 / 使用范围 / 场景限制 / 设备状态]
-    E[FanStateHandler.J 写入 target_level]
-    F[/sys/devices/platform/soc/soc:xiaomi_fan/target_level 改变]
-    G[风扇转速变化]
+官方风扇控制链路可以概括为：
 
-    A --> B --> C --> D --> E --> F --> G
+```txt
+用户在系统设置或控制中心选择风扇模式
+        ↓
+Settings / SystemUI 写入 fan_mode
+        ↓
+PowerKeeper 监听设置变化
+        ↓
+FanStateHandler 读取总开关、使用范围、场景限制和设备状态
+        ↓
+FanStateHandler.J 写入 target_level
+        ↓
+/sys/devices/platform/soc/soc:xiaomi_fan/target_level 改变
+        ↓
+风扇转速变化
 ```
 
 当前已确认的模式语义：
