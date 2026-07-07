@@ -7,6 +7,14 @@
 > LSPosed API：`102`  
 > 入口类：`com.mifan.kt.HookEntry`
 
+## 作者与开源说明
+
+作者酷安主页：[https://www.coolapk.com/u/1404550](https://www.coolapk.com/u/1404550)
+
+本模块开源免费，欢迎其他 Xposed / LSPosed 模块作者将本项目合入其个人项目，也欢迎官改 ROM 作者将此功能内置到系统中。欢迎对本项目进行优化、适配和二次开发。
+
+如进行二次开发、项目合并或 ROM 内置，请注明原作者和项目出处。
+
 ---
 
 ## 1. 模块作用
