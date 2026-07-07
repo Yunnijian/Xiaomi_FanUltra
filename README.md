@@ -5,7 +5,7 @@
 **为小米 / HyperOS 散热风扇新增“狂暴模式”的轻量级 LSPosed 模块**
 
 [![Version](https://img.shields.io/badge/version-1.0-blue.svg)](#)
-[![LSPosed](https://img.shields.io/badge/LSPosed-API%20102-orange.svg)](#)
+[![LSPosed](https://img.shields.io/badge/LSPosed-API%20102-orange.svg)](https://github.com/LSPosed/LSPosed)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-HyperOS-lightgrey.svg)](#)
 
@@ -111,8 +111,6 @@ target_level = 4
 | LSPosed / libxposed API | `io.github.libxposed:api:102.0.0`，`compileOnly` |
 | 系统平台 | HyperOS |
 | 作用域 | `com.android.settings` / `com.miui.powerkeeper` / `com.android.systemui` |
-
-> `libxposed` API 仅作为编译期依赖使用，实际运行依赖 LSPosed 环境提供 Hook 能力。
 
 ---
 
