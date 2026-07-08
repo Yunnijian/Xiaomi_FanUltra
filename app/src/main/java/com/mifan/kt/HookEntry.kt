@@ -48,7 +48,8 @@ class HookEntry : XposedModule() {
             val result = chain.proceed()
             val controller = chain.thisObject
             val screen = chain.getArg(0)
-            ensureExtremeMode(controller, findFanModePreferenceFromScreen(screen))
+            ensureExtremeMode(controller, findPreferenceFromScreen(screen, KEY_FAN_MODE))
+            ensureKeepFanOnScreenOffSwitch(classLoader, screen)
             result
         })
 
@@ -67,12 +68,61 @@ class HookEntry : XposedModule() {
             }
             chain.proceed()
         })
+
+        runCatching {
+            val enableControllerClass = classLoader.loadClass(COOLING_FAN_ENABLE_CONTROLLER)
+            val enableOnPreferenceChange = enableControllerClass.getMethod(
+                "onPreferenceChange",
+                preferenceClass,
+                Any::class.java
+            )
+            hook(enableOnPreferenceChange).intercept(XposedInterface.Hooker { chain ->
+                val result = chain.proceed()
+                val enabled = chain.getArg(1) as? Boolean
+                updateKeepFanOnScreenOffSwitchVisibilityFromPreference(chain.getArg(0), enabled)
+                result
+            })
+        }.onFailure {
+            logError("Failed to hook CoolingFanEnableController for keep fan switch visibility", it)
+        }
     }
 
     private fun installPowerKeeperHooks(classLoader: ClassLoader) {
         val handlerClass = classLoader.loadClass(FAN_STATE_HANDLER)
         val writePathMethod = handlerClass.getDeclaredMethod("J", String::class.java, String::class.java)
         writePathMethod.isAccessible = true
+
+        // 官方会在 FanStateHandler.W(state) 中把息屏/锁屏视为高优先级禁用场景，
+        // 非快充状态下最终写 target_level=0。开关开启时临时屏蔽 state.g(screenLock)，
+        // 让智能调频/静谧/高速强冷/狂暴模式都继续走官方亮屏策略。
+        runCatching {
+            val stateClass = classLoader.loadClass(FAN_STATE_HANDLER + "$" + "g")
+            val updateFanState = handlerClass.getDeclaredMethod("W", stateClass)
+            updateFanState.isAccessible = true
+            hook(updateFanState).intercept(XposedInterface.Hooker { chain ->
+                val handler = chain.thisObject
+                val state = chain.getArg(0)
+                val resolver = readPowerKeeperResolver(handler)
+                val keepOnScreenOff = isKeepFanOnScreenOffEnabled(resolver)
+                val coolingFanEnabled = resolver?.let { Settings.System.getInt(it, KEY_COOLING_FAN_ENABLE, 1) == 1 } ?: true
+                if (!keepOnScreenOff || !coolingFanEnabled || state == null) {
+                    chain.proceed()
+                } else {
+                    val oldScreenLocked = readBooleanField(state, "g", false)
+                    try {
+                        if (oldScreenLocked) {
+                            state.writeFieldIfExists("g", false)
+                            logInfo("Keep fan on screen off enabled; mask FanStateHandler state.g screenLock=false")
+                        }
+                        chain.proceed()
+                    } finally {
+                        if (oldScreenLocked) state.writeFieldIfExists("g", oldScreenLocked)
+                    }
+                }
+            })
+        }.onFailure {
+            logError("Failed to hook FanStateHandler.W for keep-on-screen-off", it)
+        }
 
         // PowerKeeper 可能只把官方档位映射到 target_level。
         // 只在 fan_mode=4 且符合官方总开关、使用范围、场景限制时，把 target_level 提升为 4。
@@ -81,7 +131,12 @@ class HookEntry : XposedModule() {
         hook(writePathMethod).intercept(XposedInterface.Hooker { chain ->
             val key = chain.getArg(0)?.toString()
             val requestedValue = chain.getArg(1)?.toString()
-            if (key == TARGET_LEVEL && shouldForceExtremeLevel(chain.thisObject) && requestedValue != MODE_EXTREME_VALUE) {
+            updateLastPositiveFanLevel(key, requestedValue)
+            val keepLevel = keepCurrentFanLevelOnScreenOff(chain.thisObject, requestedValue)
+            if (key == TARGET_LEVEL && keepLevel != null) {
+                logInfo("Keep fan on screen off; preserve target_level=$requestedValue -> $keepLevel")
+                chain.proceed(arrayOf(TARGET_LEVEL, keepLevel.toString()))
+            } else if (key == TARGET_LEVEL && shouldForceExtremeLevel(chain.thisObject) && requestedValue != MODE_EXTREME_VALUE) {
                 logInfo("Extreme fan mode allowed; override target_level=$requestedValue -> 4")
                 chain.proceed(arrayOf(TARGET_LEVEL, MODE_EXTREME_VALUE))
             } else {
@@ -404,6 +459,60 @@ class HookEntry : XposedModule() {
         }
     }
 
+    private fun updateLastPositiveFanLevel(key: String?, requestedValue: String?) {
+        if (key != TARGET_LEVEL) return
+        val level = requestedValue?.toIntOrNull() ?: return
+        if (level > 0) {
+            lastPositiveFanLevel = level
+            lastPositiveFanLevelAt = System.currentTimeMillis()
+        }
+    }
+
+    private fun keepCurrentFanLevelOnScreenOff(handler: Any?, requestedValue: String?): Int? {
+        if (handler == null || requestedValue != "0") return null
+        val resolver = readPowerKeeperResolver(handler) ?: return null
+        if (!isKeepFanOnScreenOffEnabled(resolver)) return null
+        if (Settings.System.getInt(resolver, KEY_COOLING_FAN_ENABLE, 1) != 1) return null
+
+        // 不再按 fan_mode 白名单过滤。部分 HyperOS 场景策略会使用 0/3 等内部模式值，
+        // 这里以官方实际输出过的 target_level>0 为准，息屏时只保留这个官方已给出的正档位。
+        if (!isScreenOffOrLocked(handler)) return null
+
+        // 保留录音/通话听筒等高优先级停转场景，避免绕过安全/体验限制。
+        val micSwitch = Settings.System.getInt(resolver, KEY_SMART_STOP_RECORDING, if (readBooleanField(handler, "B", true)) 1 else 0) == 1
+        val recordingActive = readBooleanField(handler, "F", false)
+        val simCall = readBooleanField(handler, "M", false)
+        val earpiece = readBooleanField(handler, "N", false)
+        if (micSwitch && recordingActive) return null
+        if (simCall && earpiece) return null
+
+        val currentLevel = readIntField(handler, "p", 0).takeIf { it > 0 }
+        val cachedLevel = lastPositiveFanLevel.takeIf {
+            it > 0 && System.currentTimeMillis() - lastPositiveFanLevelAt <= KEEP_SCREEN_OFF_LEVEL_CACHE_MS
+        }
+        return currentLevel ?: cachedLevel
+    }
+
+    private fun isScreenOffOrLocked(handler: Any): Boolean {
+        if (readBooleanField(handler, "L", false)) return true
+        return try {
+            val powerManager = handler.readFieldOrNull("h0")
+            val interactive = powerManager?.javaClass?.getMethod("isInteractive")?.invoke(powerManager) as? Boolean
+            interactive == false
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun isKeepFanOnScreenOffEnabled(resolver: ContentResolver?): Boolean {
+        if (resolver == null) return false
+        return try {
+            Settings.System.getInt(resolver, KEY_KEEP_FAN_ON_SCREEN_OFF, 0) == 1
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private fun shouldForceExtremeLevel(handler: Any?): Boolean {
         if (handler == null) return false
         val resolver = readPowerKeeperResolver(handler) ?: return false
@@ -419,10 +528,11 @@ class HookEntry : XposedModule() {
         // 和官方逻辑一致：通话/录音/锁屏等高优先级场景应允许风扇停止。
         val screenLocked = readBooleanField(handler, "L", false)
         val fastChargeActive = readBooleanField(handler, "C", false)
+        val keepOnScreenOff = isKeepFanOnScreenOffEnabled(resolver)
         val recordingActive = readBooleanField(handler, "F", false)
         val simCall = readBooleanField(handler, "M", false)
         val earpiece = readBooleanField(handler, "N", false)
-        if (screenLocked && !fastChargeActive) return false
+        if (screenLocked && !fastChargeActive && !keepOnScreenOff) return false
         if (micSwitch && recordingActive) return false
         if (simCall && earpiece) return false
 
@@ -506,15 +616,160 @@ class HookEntry : XposedModule() {
         }
     }
 
-    private fun findFanModePreferenceFromScreen(screen: Any?): Any? {
+    private fun findPreferenceFromScreen(screen: Any?, key: String): Any? {
         if (screen == null) return null
         return try {
             val method = screen.javaClass.findPublicOrDeclaredMethod("findPreference", CharSequence::class.java)
-            method?.invoke(screen, KEY_FAN_MODE)
+            method?.invoke(screen, key)
         } catch (t: Throwable) {
-            logError("findPreference(fan_mode) failed", t)
+            logError("findPreference($key) failed", t)
             null
         }
+    }
+
+    private fun ensureKeepFanOnScreenOffSwitch(classLoader: ClassLoader, screen: Any?) {
+        if (screen == null) return
+        if (findPreferenceFromScreen(screen, KEY_KEEP_FAN_ON_SCREEN_OFF) != null) return
+
+        try {
+            val context = screen.javaClass.findPublicOrDeclaredMethod("getContext")?.invoke(screen) ?: return
+            val resolver = context.javaClass.getMethod("getContentResolver").invoke(context) as? ContentResolver ?: return
+            val switchClass = loadKeepFanSwitchPreferenceClass(classLoader) ?: return
+            val preference = createPreferenceInstance(switchClass, context) ?: return
+
+            callPreferenceVoid(preference, "setKey", arrayOf(String::class.java), KEY_KEEP_FAN_ON_SCREEN_OFF)
+            callPreferenceVoid(preference, "setTitle", arrayOf(CharSequence::class.java), KEEP_FAN_ON_SCREEN_OFF_TITLE)
+            callPreferenceVoid(preference, "setSummary", arrayOf(CharSequence::class.java), KEEP_FAN_ON_SCREEN_OFF_SUMMARY)
+            callPreferenceVoid(preference, "setPersistent", arrayOf(Boolean::class.javaPrimitiveType!!), false)
+            // 部分系统同款 SwitchPreference 的 setDependency 反射签名不稳定；
+            // 可见性已由 CoolingFanEnableController.onPreferenceChange + setVisible 接管，避免无意义错误日志。
+            setPreferenceVisible(preference, isCoolingFanEnabled(resolver))
+            callPreferenceVoid(preference, "setChecked", arrayOf(Boolean::class.javaPrimitiveType!!), isKeepFanOnScreenOffEnabled(resolver))
+            installKeepFanOnScreenOffChangeListener(classLoader, preference, resolver)
+
+            val parent = findPreferenceFromScreen(screen, KEY_FAN_OTHER_FEATURES_CATEGORY) ?: screen
+            var added = callPreferenceBoolean(parent, "addPreference", preference)
+            if (!added && parent !== screen) {
+                added = callPreferenceBoolean(screen, "addPreference", preference)
+            }
+            logInfo("Keep fan on screen off switch ensured, added=$added, class=${switchClass.name}")
+        } catch (t: Throwable) {
+            logError("Failed to ensure keep fan on screen off switch", t)
+        }
+    }
+
+
+    private fun createPreferenceInstance(preferenceClass: Class<*>, context: Any): Any? {
+        val contextClass = context.javaClass
+        return try {
+            val constructor = preferenceClass.constructors.firstOrNull { ctor ->
+                ctor.parameterTypes.size == 1 && ctor.parameterTypes[0].isAssignableFrom(contextClass)
+            } ?: preferenceClass.declaredConstructors.firstOrNull { ctor ->
+                ctor.parameterTypes.size == 1 && ctor.parameterTypes[0].isAssignableFrom(contextClass)
+            }
+            if (constructor == null) {
+                logInfo("No compatible constructor for ${preferenceClass.name}, context=${contextClass.name}")
+                null
+            } else {
+                constructor.isAccessible = true
+                constructor.newInstance(context)
+            }
+        } catch (t: Throwable) {
+            logError("Create preference ${preferenceClass.name} failed", t)
+            null
+        }
+    }
+
+    private fun loadKeepFanSwitchPreferenceClass(classLoader: ClassLoader): Class<*>? {
+        val names = arrayOf(
+            "com.android.settingslib.miuisettings.preference.SwitchPreference",
+            "miuix.preference.SwitchPreference",
+            "androidx.preference.SwitchPreferenceCompat",
+            "androidx.preference.SwitchPreference"
+        )
+        for (name in names) {
+            try {
+                return classLoader.loadClass(name)
+            } catch (_: Throwable) {
+            }
+        }
+        return null
+    }
+
+    private fun installKeepFanOnScreenOffChangeListener(classLoader: ClassLoader, preference: Any, resolver: ContentResolver) {
+        val listenerClass = classLoader.loadClass("androidx.preference.Preference" + "$" + "OnPreferenceChangeListener")
+        val listener = java.lang.reflect.Proxy.newProxyInstance(
+            classLoader,
+            arrayOf(listenerClass)
+        ) { _, method, args ->
+            when (method.name) {
+                "onPreferenceChange" -> {
+                    val enabled = args?.getOrNull(1) as? Boolean ?: false
+                    Settings.System.putInt(resolver, KEY_KEEP_FAN_ON_SCREEN_OFF, if (enabled) 1 else 0)
+                    logInfo("Keep fan on screen off switch changed: $enabled")
+                    true
+                }
+                "toString" -> "MifanKeepFanOnScreenOffListener"
+                "hashCode" -> System.identityHashCode(this)
+                "equals" -> this === args?.getOrNull(0)
+                else -> null
+            }
+        }
+        callPreferenceVoid(preference, "setOnPreferenceChangeListener", arrayOf(listenerClass), listener)
+    }
+
+    private fun callPreferenceVoid(target: Any, methodName: String, parameterTypes: Array<Class<*>>, arg: Any?): Boolean {
+        return try {
+            val method = target.javaClass.findPublicOrDeclaredMethod(methodName, *parameterTypes) ?: return false
+            method.invoke(target, arg)
+            true
+        } catch (t: Throwable) {
+            logError("Call preference $methodName failed", t)
+            false
+        }
+    }
+
+    private fun callPreferenceBoolean(parent: Any, methodName: String, preference: Any): Boolean {
+        return try {
+            val method = parent.javaClass.methods.firstOrNull {
+                it.name == methodName && it.parameterTypes.size == 1 && it.parameterTypes[0].isAssignableFrom(preference.javaClass)
+            } ?: parent.javaClass.declaredMethods.firstOrNull {
+                it.name == methodName && it.parameterTypes.size == 1 && it.parameterTypes[0].isAssignableFrom(preference.javaClass)
+            } ?: return false
+            method.isAccessible = true
+            method.invoke(parent, preference) as? Boolean ?: true
+        } catch (t: Throwable) {
+            logError("Call preference group $methodName failed", t)
+            false
+        }
+    }
+
+    private fun isCoolingFanEnabled(resolver: ContentResolver?): Boolean {
+        if (resolver == null) return true
+        return try {
+            Settings.System.getInt(resolver, KEY_COOLING_FAN_ENABLE, 1) == 1
+        } catch (_: Throwable) {
+            true
+        }
+    }
+
+    private fun updateKeepFanOnScreenOffSwitchVisibilityFromPreference(preference: Any?, enabledOverride: Boolean?) {
+        if (preference == null) return
+        try {
+            val parent = preference.javaClass.findPublicOrDeclaredMethod("getParent")?.invoke(preference) ?: return
+            val keepSwitch = findPreferenceFromScreen(parent, KEY_KEEP_FAN_ON_SCREEN_OFF) ?: return
+            val context = preference.javaClass.findPublicOrDeclaredMethod("getContext")?.invoke(preference)
+            val resolver = context?.javaClass?.getMethod("getContentResolver")?.invoke(context) as? ContentResolver
+            val visible = enabledOverride ?: isCoolingFanEnabled(resolver)
+            setPreferenceVisible(keepSwitch, visible)
+            logInfo("Keep fan on screen off switch visibility updated: visible=$visible")
+        } catch (t: Throwable) {
+            logError("Update keep fan on screen off switch visibility failed", t)
+        }
+    }
+
+    private fun setPreferenceVisible(preference: Any, visible: Boolean): Boolean {
+        return callPreferenceVoid(preference, "setVisible", arrayOf(Boolean::class.javaPrimitiveType!!), visible)
     }
 
     private fun ensureExtremeMode(controller: Any?, preference: Any?) {
@@ -676,6 +931,10 @@ class HookEntry : XposedModule() {
         private var lastFanModeSeen = -1
         @Volatile
         private var extremeToSmartBridgeInProgress = false
+        @Volatile
+        private var lastPositiveFanLevel = 0
+        @Volatile
+        private var lastPositiveFanLevelAt = 0L
 
         private const val TAG = "FanModeHook"
         private const val TARGET_PACKAGE = "com.android.settings"
@@ -683,6 +942,7 @@ class HookEntry : XposedModule() {
         private const val SYSTEMUI_PACKAGE = "com.android.systemui"
         private const val POWERKEEPER_BASE_CLASS = "com.miui.powerkeeper.unionpower.corehandler.a"
         private const val FAN_MODE_CONTROLLER = "com.android.settings.coolingfan.FanModeController"
+        private const val COOLING_FAN_ENABLE_CONTROLLER = "com.android.settings.coolingfan.CoolingFanEnableController"
         private const val FAN_STATE_HANDLER = "com.miui.powerkeeper.unionpower.corehandler.FanStateHandler"
         private const val SYSTEMUI_COOLING_FAN_CONTROLLER = "com.android.systemui.controlcenter.policy.CoolingFanController"
         private const val SYSTEMUI_COOLING_FAN_DETAIL_ADAPTER = "com.android.systemui.qs.tiles.CoolingFanTile\$CoolingFanDetailAdapter"
@@ -693,7 +953,9 @@ class HookEntry : XposedModule() {
         private const val KEY_SCENE_RAPID_CHARGE = "fan_mode_scene_rapid_charge"
         private const val KEY_SCENE_NAVIGATION = "fan_mode_scene_navigation"
         private const val KEY_SMART_STOP_RECORDING = "fan_smart_stop_on_recording"
+        private const val KEY_FAN_OTHER_FEATURES_CATEGORY = "fan_other_features_category"
         private const val KEY_EXTREME_TO_SMART_BRIDGE_UNTIL = "mifan_extreme_to_smart_bridge_until"
+        private const val KEY_KEEP_FAN_ON_SCREEN_OFF = "mifan_keep_fan_on_screen_off"
         private const val TARGET_LEVEL = "target_level"
         private const val SYSTEMUI_FALLBACK_MODE_SMART_STRING_RES = 0x7f140c70
         private const val SYSTEMUI_FALLBACK_MODE_HIGH_STRING_RES = 0x7f140c6e
@@ -704,7 +966,10 @@ class HookEntry : XposedModule() {
         private const val MODE_EXTREME_VALUE = "4"
         private const val EXTREME_TO_SMART_PK_DELAY_MS = 800L
         private const val SYSTEMUI_BRIDGE_MASK_EXTRA_MS = 400L
+        private const val KEEP_SCREEN_OFF_LEVEL_CACHE_MS = 10 * 60 * 1000L
         private const val MODE_EXTREME_TITLE = "狂暴模式"
         private const val MODE_EXTREME_SUMMARY = "疾速冷却，最大幅度提升散热能力"
+        private const val KEEP_FAN_ON_SCREEN_OFF_TITLE = "息屏时保持风扇开启"
+        private const val KEEP_FAN_ON_SCREEN_OFF_SUMMARY = "开启后，息屏或锁屏时各风扇档位仍可继续运行，可能增加功耗和噪音"
     }
 }
