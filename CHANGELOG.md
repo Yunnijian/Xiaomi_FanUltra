@@ -17,7 +17,6 @@
 
 - 狂暴模式导航逻辑对齐官方场景语义：仅打开导航 App 不会持续启动风扇；进入真实导航后，需要 PowerKeeper 导航场景状态和前台导航包同时成立。
 - 保留快充/导航场景保底语义：应用级关闭风扇或静谧模式不会压低这些场景档位，高于场景档位的应用规则仍可覆盖。
-- 明确快充高热息屏散热属于预期行为。
 
 ### 修复
 
@@ -44,7 +43,6 @@
 
 - Aligned extreme mode navigation behavior with official scene semantics: opening a navigation app alone does not keep the fan running; active navigation requires PowerKeeper's navigation scene state and a foreground navigation package.
 - Preserved rapid-charge/navigation scene floor behavior: app-level off or quiet rules do not reduce those scene floors, while higher app levels can still override them.
-- Documented fast-charge screen-off cooling behavior as expected high-heat handling.
 
 ### Fixed
 
