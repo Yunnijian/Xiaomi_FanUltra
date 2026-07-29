@@ -77,9 +77,19 @@ internal fun HookEntry.installPowerKeeperHooks(classLoader: ClassLoader, apkPath
         val key = chain.getArg(0)?.toString()
         val requestedValue = chain.getArg(1)?.toString()
         if (key == FanModeConstants.TARGET_LEVEL) {
-            val perAppLevel = resolveEffectivePerAppFanLevel(chain.thisObject)
-            if (perAppLevel != null && perAppLevel != FanModeConstants.PER_APP_LEVEL_SMART) {
-                val finalValue = perAppLevel.toString()
+            val customDecision = resolveCustomFanPolicy(chain.thisObject)
+            if (customDecision.blocked) {
+                if (requestedValue != FanModeConstants.PER_APP_LEVEL_OFF.toString()) {
+                    logInfo(
+                        "Custom fan policy blocked target_level=$requestedValue -> 0: " +
+                            customDecision.reason
+                    )
+                    chain.proceed(arrayOf(FanModeConstants.TARGET_LEVEL, FanModeConstants.PER_APP_LEVEL_OFF.toString()))
+                } else {
+                    chain.proceed()
+                }
+            } else if (customDecision.level != null) {
+                val finalValue = customDecision.level.toString()
                 updateLastPositiveFanLevel(key, finalValue)
                 if (requestedValue != finalValue) {
                     logInfo("Custom per-app fan rule matched; override target_level=$requestedValue -> $finalValue")
@@ -87,7 +97,13 @@ internal fun HookEntry.installPowerKeeperHooks(classLoader: ClassLoader, apkPath
                 chain.proceed(arrayOf(FanModeConstants.TARGET_LEVEL, finalValue))
             } else {
                 updateLastPositiveFanLevel(key, requestedValue)
-                val keepLevel = keepCurrentFanLevelOnScreenOff(chain.thisObject, requestedValue)
+                // The unified custom decision has already checked master/scene/stop gates.
+                // Only allow the historical screen-off preservation after that check.
+                val keepLevel = if (!customDecision.blocked) {
+                    keepCurrentFanLevelOnScreenOff(chain.thisObject, requestedValue)
+                } else {
+                    null
+                }
                 if (keepLevel != null) {
                     logInfo("Keep fan on screen off; preserve target_level=$requestedValue -> $keepLevel")
                     chain.proceed(arrayOf(FanModeConstants.TARGET_LEVEL, keepLevel.toString()))
@@ -175,13 +191,159 @@ internal fun HookEntry.rememberPowerKeeperResolver(resolver: ContentResolver): C
     return resolver
 }
 
+internal data class CustomFanPolicyDecision(
+    val customMode: Boolean = false,
+    val applicable: Boolean = false,
+    val blocked: Boolean = false,
+    val level: Int? = null,
+    val packageName: String? = null,
+    val reason: String = ""
+)
+
+/**
+ * Resolves the complete custom-mode policy before any default floor or screen-off
+ * preservation is considered. A blocked decision is explicit so it cannot be
+ * mistaken for an unconfigured app (which is allowed to use the smart floor).
+ */
+internal fun HookEntry.resolveCustomFanPolicy(handler: Any?): CustomFanPolicyDecision {
+    if (handler == null) return CustomFanPolicyDecision()
+    val resolver = readPowerKeeperResolver(handler) ?: return CustomFanPolicyDecision()
+    if (!isCustomFanModeSelected(resolver)) return CustomFanPolicyDecision()
+
+    val packageName = handler.readFieldOrNull(RomTargets.FIELD_PK_FOREGROUND_PACKAGE)
+        ?.toString()
+        ?.takeIf { it.isNotBlank() }
+    val coolingFanEnabled = Settings.System.getInt(
+        resolver,
+        FanModeConstants.KEY_COOLING_FAN_ENABLE,
+        1
+    ) == 1
+    if (!coolingFanEnabled) {
+        return CustomFanPolicyDecision(
+            customMode = true,
+            applicable = true,
+            blocked = true,
+            packageName = packageName,
+            reason = "cooling fan master switch is disabled"
+        )
+    }
+
+    val micSwitch = Settings.System.getInt(
+        resolver,
+        FanModeConstants.KEY_SMART_STOP_RECORDING,
+        if (readBooleanField(handler, RomTargets.FIELD_PK_MIC_SWITCH, true)) 1 else 0
+    ) == 1
+    val recordingActive = readBooleanField(handler, RomTargets.FIELD_PK_RECORDING_ACTIVE, false)
+    if (micSwitch && recordingActive) {
+        return CustomFanPolicyDecision(
+            customMode = true,
+            applicable = true,
+            blocked = true,
+            packageName = packageName,
+            reason = "recording smart-stop is active"
+        )
+    }
+
+    val simCall = readBooleanField(handler, RomTargets.FIELD_PK_SIM_CALL_ACTIVE, false)
+    val earpiece = readBooleanField(handler, RomTargets.FIELD_PK_EARPIECE_ACTIVE, false)
+    if (simCall && earpiece) {
+        return CustomFanPolicyDecision(
+            customMode = true,
+            applicable = true,
+            blocked = true,
+            packageName = packageName,
+            reason = "SIM call is using the earpiece"
+        )
+    }
+
+    val fastChargeActive = readBooleanField(handler, RomTargets.FIELD_PK_FAST_CHARGE_ACTIVE, false)
+    if (isScreenOffOrLocked(handler) && !isKeepFanOnScreenOffEnabled(resolver) && !fastChargeActive) {
+        return CustomFanPolicyDecision(
+            customMode = true,
+            applicable = true,
+            blocked = true,
+            packageName = packageName,
+            reason = "screen-off fan keep is disabled"
+        )
+    }
+
+    val gameActive = isGameLikeSceneActive(handler)
+    val chargeActive = fastChargeActive
+    val navigationActive = packageName != null && isNavigationSceneActive(handler, packageName)
+    val gameSwitch = Settings.System.getInt(
+        resolver,
+        FanModeConstants.KEY_SCENE_GAMING,
+        if (readBooleanField(handler, RomTargets.FIELD_PK_GAME_SWITCH, true)) 1 else 0
+    ) == 1
+    val chargeSwitch = Settings.System.getInt(
+        resolver,
+        FanModeConstants.KEY_SCENE_RAPID_CHARGE,
+        if (readBooleanField(handler, RomTargets.FIELD_PK_CHARGE_SWITCH, false)) 1 else 0
+    ) == 1
+    val navigationSwitch = Settings.System.getInt(
+        resolver,
+        FanModeConstants.KEY_SCENE_NAVIGATION,
+        if (readBooleanField(handler, RomTargets.FIELD_PK_NAVIGATION_SWITCH, false)) 1 else 0
+    ) == 1
+    val blockedScene = when {
+        gameActive && !gameSwitch -> "gaming scene switch is disabled"
+        chargeActive && !chargeSwitch -> "rapid-charge scene switch is disabled"
+        navigationActive && !navigationSwitch -> "navigation scene switch is disabled"
+        else -> null
+    }
+    if (blockedScene != null) {
+        return CustomFanPolicyDecision(
+            customMode = true,
+            applicable = true,
+            blocked = true,
+            packageName = packageName,
+            reason = blockedScene
+        )
+    }
+
+    if (packageName == null) {
+        return CustomFanPolicyDecision(customMode = true)
+    }
+
+    val appLevel = readPerAppFanRules(resolver)[packageName]
+    val sceneLevel = resolveCustomSceneLevel(handler, resolver, packageName)
+    val mergedLevel = mergeCustomFanLevels(appLevel, sceneLevel)
+        ?.takeIf { it != FanModeConstants.PER_APP_LEVEL_SMART }
+    return CustomFanPolicyDecision(
+        customMode = true,
+        applicable = true,
+        level = mergedLevel,
+        packageName = packageName,
+        reason = when {
+            sceneLevel != null && appLevel != null -> "app and scene policy"
+            sceneLevel != null -> "scene policy"
+            appLevel != null -> "app policy"
+            else -> "smart/default policy"
+        }
+    )
+}
+
+internal fun HookEntry.isGameLikeSceneActive(handler: Any): Boolean {
+    val thermal = handler.readFieldOrNull(RomTargets.FIELD_PK_THERMAL)?.toString()
+    return containsInSetField(handler, RomTargets.FIELD_PK_GAME_THERMAL_SET_A, thermal) ||
+        containsInSetField(handler, RomTargets.FIELD_PK_GAME_THERMAL_SET_B, thermal)
+}
+
+internal fun HookEntry.isNavigationSceneActive(handler: Any, packageName: String): Boolean {
+    if (!readBooleanField(handler, RomTargets.FIELD_PK_NAVIGATION_SCENE, false)) return false
+    val navigationApps = handler.readFieldOrNull(RomTargets.FIELD_PK_NAVIGATION_APPS)
+    return if (navigationApps is Map<*, *>) {
+        navigationApps.containsKey(packageName)
+    } else {
+        // Keep the scene usable on ROMs that expose the active flag but not the app map.
+        true
+    }
+}
+
 internal fun HookEntry.resolveEffectivePerAppFanLevel(handler: Any?): Int? {
-    if (handler == null) return null
-    val resolver = readPowerKeeperResolver(handler) ?: return null
-    if (!isCustomFanModeSelected(resolver)) return null
-    val packageName = handler.readFieldOrNull(RomTargets.FIELD_PK_FOREGROUND_PACKAGE)?.toString()?.takeIf { it.isNotBlank() } ?: return null
-    val appLevel = resolvePerAppFanLevel(handler)
-    return resolveEffectiveCustomFanLevel(handler, resolver, packageName, appLevel)
+    val decision = resolveCustomFanPolicy(handler)
+    if (!decision.customMode || !decision.applicable) return null
+    return if (decision.blocked) FanModeConstants.PER_APP_LEVEL_OFF else decision.level
 }
 
 /**
@@ -189,13 +351,10 @@ internal fun HookEntry.resolveEffectivePerAppFanLevel(handler: Any?): Int? {
  * Explicit「关闭风扇」(0) is handled as a real per-app rule and never reaches here.
  */
 internal fun HookEntry.shouldFloorCustomSmartTargetLevel(handler: Any?, requestedValue: String?): Boolean {
-    val resolver = readPowerKeeperResolver(handler) ?: return false
-    if (!isCustomFanModeSelected(resolver)) return false
     val requested = requestedValue?.toIntOrNull() ?: return false
     if (requested >= FanModeConstants.PER_APP_SMART_TARGET_LEVEL) return false
-    // Only floor when there is no explicit non-smart app/scene rule (those use the override branch).
-    val effective = resolveEffectivePerAppFanLevel(handler)
-    return effective == null || effective == FanModeConstants.PER_APP_LEVEL_SMART
+    val decision = resolveCustomFanPolicy(handler)
+    return decision.customMode && decision.applicable && !decision.blocked && decision.level == null
 }
 
 internal fun HookEntry.applyPerAppFanPolicy(handler: Any?, writePathMethod: Method): Boolean {
@@ -203,15 +362,40 @@ internal fun HookEntry.applyPerAppFanPolicy(handler: Any?, writePathMethod: Meth
     val resolver = readPowerKeeperResolver(handler) ?: return false
     if (!isCustomFanModeSelected(resolver)) return false
 
-    val packageName = handler.readFieldOrNull(RomTargets.FIELD_PK_FOREGROUND_PACKAGE)?.toString()?.takeIf { it.isNotBlank() } ?: return false
-    val appLevel = resolvePerAppFanLevel(handler)
-    val sceneLevel = resolveCustomSceneLevel(handler, resolver, packageName)
-    val level = mergeCustomFanLevels(appLevel, sceneLevel)
+    val decision = resolveCustomFanPolicy(handler)
+    if (!decision.applicable) return false
+    val packageName = decision.packageName
+    val cachePackage = packageName ?: "<custom-policy>"
+    val level = if (decision.blocked) FanModeConstants.PER_APP_LEVEL_OFF else decision.level
 
     val now = System.currentTimeMillis()
     val hasAnyRule = Settings.System.getString(resolver, FanModeConstants.KEY_PER_APP_FAN_RULES)?.isNotBlank() == true
+    if (decision.blocked) {
+        val recentlyAppliedOff = synchronized(FanSharedState.powerKeeperStateLock) {
+            cachePackage == FanSharedState.lastPerAppAppliedPackage &&
+                FanSharedState.lastPerAppAppliedLevel == FanModeConstants.PER_APP_LEVEL_OFF &&
+                now - FanSharedState.lastPerAppAppliedAt < FanModeConstants.PER_APP_ACTIVE_WRITE_MIN_INTERVAL_MS
+        }
+        if (!recentlyAppliedOff) {
+            writeTargetLevelByPowerKeeper(
+                handler,
+                writePathMethod,
+                FanModeConstants.PER_APP_LEVEL_OFF,
+                "Custom fan policy blocked: pkg=${packageName ?: "unknown"}, reason=${decision.reason}"
+            )
+            synchronized(FanSharedState.powerKeeperStateLock) {
+                FanSharedState.lastPerAppAppliedPackage = cachePackage
+                FanSharedState.lastPerAppAppliedLevel = FanModeConstants.PER_APP_LEVEL_OFF
+                FanSharedState.lastPerAppAppliedAt = now
+                FanSharedState.lastPerAppNoMatchPackage = null
+            }
+        }
+        return true
+    }
+    if (packageName == null) return false
+
     // UI default remains「智能调频」, but hardware floor is target_level=1 so the fan is not stuck at 0.
-    if (level == null || level == FanModeConstants.PER_APP_LEVEL_SMART) {
+    if (level == null) {
         val floorLevel = FanModeConstants.PER_APP_SMART_TARGET_LEVEL
         var shouldLogSmartDefault = false
         synchronized(FanSharedState.powerKeeperStateLock) {
@@ -255,11 +439,7 @@ internal fun HookEntry.applyPerAppFanPolicy(handler: Any?, writePathMethod: Meth
     }
     if (recentlyApplied) return true
 
-    val reason = when {
-        sceneLevel != null && appLevel != null && appLevel != FanModeConstants.PER_APP_LEVEL_SMART -> "Custom fan app/scene max applied: pkg=$packageName, appLevel=$appLevel, sceneLevel=$sceneLevel"
-        sceneLevel != null -> "Custom fan scene fallback applied: pkg=$packageName, sceneLevel=$sceneLevel"
-        else -> "Custom per-app fan policy applied: pkg=$packageName"
-    }
+    val reason = "Custom per-app fan ${decision.reason} applied: pkg=$packageName, level=$level"
     writeTargetLevelByPowerKeeper(handler, writePathMethod, level, reason)
     synchronized(FanSharedState.powerKeeperStateLock) {
         FanSharedState.lastPerAppAppliedPackage = packageName
@@ -395,25 +575,13 @@ internal fun HookEntry.resolveEffectiveCustomFanLevel(
     packageName: String,
     appLevel: Int?
 ): Int? {
-    val sceneLevel = if (isCustomSceneFallbackAllowed(handler, resolver)) {
-        resolveCustomSceneLevel(handler, resolver, packageName)
-    } else {
-        null
-    }
+    val sceneLevel = resolveCustomSceneLevel(handler, resolver, packageName)
     return mergeCustomFanLevels(appLevel, sceneLevel)
 }
 
 internal fun HookEntry.isCustomSceneFallbackAllowed(handler: Any, resolver: ContentResolver): Boolean {
-    if (Settings.System.getInt(resolver, FanModeConstants.KEY_COOLING_FAN_ENABLE, 1) != 1) return false
-
-    // Scene fallback is a charging/navigation safety floor, but it must not bypass higher-priority stops.
-    val micSwitch = Settings.System.getInt(resolver, FanModeConstants.KEY_SMART_STOP_RECORDING, if (readBooleanField(handler, RomTargets.FIELD_PK_MIC_SWITCH, true)) 1 else 0) == 1
-    val recordingActive = readBooleanField(handler, RomTargets.FIELD_PK_RECORDING_ACTIVE, false)
-    val simCall = readBooleanField(handler, RomTargets.FIELD_PK_SIM_CALL_ACTIVE, false)
-    val earpiece = readBooleanField(handler, RomTargets.FIELD_PK_EARPIECE_ACTIVE, false)
-    if (micSwitch && recordingActive) return false
-    if (simCall && earpiece) return false
-    return true
+    val decision = resolveCustomFanPolicy(handler)
+    return decision.customMode && decision.applicable && !decision.blocked
 }
 
 internal fun HookEntry.mergeCustomFanLevels(appLevel: Int?, sceneLevel: Int?): Int? {
@@ -431,7 +599,7 @@ internal fun HookEntry.resolveCustomSceneLevel(handler: Any, resolver: ContentRe
     val chargeSwitch = Settings.System.getInt(resolver, FanModeConstants.KEY_SCENE_RAPID_CHARGE, if (readBooleanField(handler, RomTargets.FIELD_PK_CHARGE_SWITCH, false)) 1 else 0) == 1
     val navigationSwitch = Settings.System.getInt(resolver, FanModeConstants.KEY_SCENE_NAVIGATION, if (readBooleanField(handler, RomTargets.FIELD_PK_NAVIGATION_SWITCH, false)) 1 else 0) == 1
     val fastChargeActive = readBooleanField(handler, RomTargets.FIELD_PK_FAST_CHARGE_ACTIVE, false)
-    val navigationScene = readBooleanField(handler, RomTargets.FIELD_PK_NAVIGATION_SCENE, false) || containsKeyInMapField(handler, RomTargets.FIELD_PK_NAVIGATION_APPS, packageName)
+    val navigationScene = isNavigationSceneActive(handler, packageName)
     return when {
         chargeSwitch && fastChargeActive -> {
             logInfo("Custom fan rapid-charge scene fallback matched: pkg=$packageName, level=$sceneLevel")
@@ -446,40 +614,11 @@ internal fun HookEntry.resolveCustomSceneLevel(handler: Any, resolver: ContentRe
 }
 
 internal fun HookEntry.resolvePerAppFanLevel(handler: Any?): Int? {
-    if (handler == null) return null
+    val decision = resolveCustomFanPolicy(handler)
+    if (!decision.customMode || !decision.applicable || decision.blocked) return null
     val resolver = readPowerKeeperResolver(handler) ?: return null
-    if (!isCustomFanModeSelected(resolver)) return null
-    if (Settings.System.getInt(resolver, FanModeConstants.KEY_COOLING_FAN_ENABLE, 1) != 1) return null
-
-    // 分应用规则不绕过现有高优先级停转场景：录音智能停转、SIM 通话听筒。
-    val micSwitch = Settings.System.getInt(resolver, FanModeConstants.KEY_SMART_STOP_RECORDING, if (readBooleanField(handler, RomTargets.FIELD_PK_MIC_SWITCH, true)) 1 else 0) == 1
-    val recordingActive = readBooleanField(handler, RomTargets.FIELD_PK_RECORDING_ACTIVE, false)
-    val simCall = readBooleanField(handler, RomTargets.FIELD_PK_SIM_CALL_ACTIVE, false)
-    val earpiece = readBooleanField(handler, RomTargets.FIELD_PK_EARPIECE_ACTIVE, false)
-    if (micSwitch && recordingActive) return null
-    if (simCall && earpiece) return null
-
-    val packageName = handler.readFieldOrNull(RomTargets.FIELD_PK_FOREGROUND_PACKAGE)?.toString()?.takeIf { it.isNotBlank() } ?: return null
-
-    // “息屏时保持风扇开启”只控制普通非充电息屏；快充/充电息屏保持官方允许风扇开启的语义。
-    val fastChargeActive = readBooleanField(handler, RomTargets.FIELD_PK_FAST_CHARGE_ACTIVE, false)
-    if (isScreenOffOrLocked(handler) && !isKeepFanOnScreenOffEnabled(resolver) && !fastChargeActive) return null
-
-    // 自定义/分应用固定档位不绕过官方“使用场景”里的快充和导航开关：对应 active 但开关关闭时放行官方策略。
-    val chargeSwitch = Settings.System.getInt(resolver, FanModeConstants.KEY_SCENE_RAPID_CHARGE, if (readBooleanField(handler, RomTargets.FIELD_PK_CHARGE_SWITCH, false)) 1 else 0) == 1
-    val navigationSwitch = Settings.System.getInt(resolver, FanModeConstants.KEY_SCENE_NAVIGATION, if (readBooleanField(handler, RomTargets.FIELD_PK_NAVIGATION_SWITCH, false)) 1 else 0) == 1
-    val navigationScene = readBooleanField(handler, RomTargets.FIELD_PK_NAVIGATION_SCENE, false) || containsKeyInMapField(handler, RomTargets.FIELD_PK_NAVIGATION_APPS, packageName)
-    if (fastChargeActive && !chargeSwitch) {
-        logInfo("Custom per-app fan scene blocked by rapid-charge switch: pkg=$packageName")
-        return null
-    }
-    if (navigationScene && !navigationSwitch) {
-        logInfo("Custom per-app fan scene blocked by navigation switch: pkg=$packageName")
-        return null
-    }
-
-    val rules = readPerAppFanRules(resolver)
-    return rules[packageName]
+    val packageName = decision.packageName ?: return null
+    return readPerAppFanRules(resolver)[packageName]
 }
 
 internal fun HookEntry.readPerAppFanRules(resolver: ContentResolver): Map<String, Int> {
