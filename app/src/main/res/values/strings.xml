@@ -1,4 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">MifanUltra</string>
-    <string name="app_description">为K90Ultra散热风扇添加狂暴模式！</string>
+    <string name="app_name">Xiaomi_FanUltra</string>
+    <string name="app_description">为 HyperOS 散热风扇添加狂暴模式、自定义按应用档位与息屏保持</string>
+    <string name="per_app_fan_config_title">应用配置</string>
+
+    <!-- KernelSU SuperUserMiuix string keys (UI identical; superuser title remapped) -->
+    <string name="superuser">应用配置</string>
+    <string name="show_system_apps">显示系统应用</string>
+    <string name="show_only_primary_user_apps">仅显示主用户应用</string>
+    <string name="recently_installed">最近安装</string>
+    <string name="settings_sulog">SU 日志</string>
+    <string name="refresh_pulling">下拉刷新</string>
+    <string name="refresh_release">松开刷新</string>
+    <string name="refresh_refresh">正在刷新…</string>
+    <string name="refresh_complete">刷新完成</string>
+    <string name="group_contains_apps">包含 %d 个应用</string>
+    <string name="menu_sort">排序</string>
+    <string name="sort_by_name">应用名称</string>
+    <string name="sort_by_package_name">包名</string>
+    <string name="sort_by_install_time">安装时间</string>
+    <string name="sort_by_update_time">更新时间</string>
+    <string name="sort_reverse">倒序</string>
 </resources>

@@ -5,6 +5,14 @@
 -dontwarn io.github.libxposed.**
 -keep class io.github.libxposed.** { *; }
 
+# DexKit (native + JNI bridge). Used at runtime inside host processes.
+-keep class org.luckypray.dexkit.** { *; }
+-keepclassmembers class org.luckypray.dexkit.** { *; }
+-dontwarn org.luckypray.dexkit.**
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+
 # Android framework / host app classes are resolved from target processes at runtime.
 -dontwarn android.**
 -dontwarn androidx.**

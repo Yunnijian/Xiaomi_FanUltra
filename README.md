@@ -2,7 +2,7 @@
 
 # Xiaomi_FanUltra
 
-**为 HyperOS 散热风扇新增「狂暴模式」与息屏保持开关的轻量级 LSPosed 模块**
+**为 HyperOS 散热风扇新增「狂暴模式」、自定义按应用档位与息屏保持开关的轻量级 LSPosed 模块**
 
 [![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](#)
 [![Release](https://img.shields.io/badge/release-download-brightgreen.svg)](https://github.com/Yunnijian/Xiaomi_FanUltra/releases/tag/v1.1.0)
@@ -26,7 +26,7 @@
 
 `Xiaomi_FanUltra` 是一个面向 **HyperOS** 设备的轻量级 LSPosed 风扇增强模块。
 
-模块会在系统原有散热风扇功能中新增 **「狂暴模式」**，并提供可选的 **「息屏时保持风扇开启」** 开关。模块通过 Hook `Settings`、`SystemUI` 与 `PowerKeeper`，将新增模式和息屏保持逻辑接入官方风扇控制链路。
+模块会在系统原有散热风扇功能中新增 **「狂暴模式」** 与 **「自定义 / 按应用档位」**，并提供可选的 **「息屏时保持风扇开启」** 开关。模块通过 Hook `Settings`、`SystemUI`、`PowerKeeper` 与 `MISettings`，将扩展模式接入官方风扇控制链路。
 
 > 本项目主要用于学习、研究和个人设备调试。不同设备、系统版本和 ROM 环境可能存在兼容性差异。
 
@@ -98,8 +98,9 @@
 | minSdk | `29` |
 | Java / JVM Target | `17` |
 | LSPosed / libxposed API | `io.github.libxposed:api:102.0.0`，`compileOnly` |
+| DexKit | `org.luckypray:dexkit:2.2.0`（运行时解析混淆宿主符号，失败回退 `RomTargets`） |
 | 系统平台 | HyperOS |
-| 作用域 | `com.android.settings` / `com.miui.powerkeeper` / `com.android.systemui` |
+| 作用域 | `com.android.settings` / `com.miui.powerkeeper` / `com.android.systemui` / `com.xiaomi.misettings` |
 
 ---
 
@@ -168,16 +169,21 @@ FanStateHandler.J 写入 target_level
 风扇转速变化
 ```
 
-当前已确认的模式语义：
+### 官方 fan_mode 序号（云控对齐后）
+
+HyperOS 云控已将 **设置页** 与 **控制中心** 的 `fan_mode` 序号对齐。控制中心 / 云控对齐后的官方语义为：
 
 | fan_mode | 含义 | 来源 |
 |---:|---|---|
 | `-1` | 智能调频 | 官方 |
+| `0` | 高速强冷 | 官方（SystemUI identity / 云控对齐） |
 | `1` | 静谧模式 | 官方 |
-| `2` | 高速强冷 | 官方 |
 | `4` | 狂暴模式 | 本模块新增 |
+| `5` | 自定义（仅 UI identity） | 本模块；底层仍写 `fan_mode=-1` + 模块标记 |
 
-> `fan_mode=-1` 是智能调频。智能调频下 `target_level` 由系统动态调控，可能是 `0/1/2`，不应固定理解为 `0`。
+历史上 Settings 文档/部分 ROM 曾使用 **`1=静谧、2=高速强冷`** 的旧序号。模块通过 `OfficialFanModeSchema` 在运行时探测 Settings `entryValues` 与 SystemUI `_secondaryItems`，默认按 **控制中心对齐方案**（high=`0`）处理狂暴退出桥接；若探测到旧序号（high=`2`）则自动回退。
+
+> 不要把 `fan_mode` 与 `target_level` 混用：`fan_mode` 是策略模式 ID；`target_level` 是硬件档位（`0/1/2/3/4`）。智能调频下 `target_level` 由系统动态调控，可能是 `0/1/2`，不应固定理解为 `0`。
 
 ---
 
@@ -212,8 +218,8 @@ flowchart TD
 flowchart TD
     A[用户选择智能调频 fan_mode=-1]
     B[PowerKeeper 检测到刚从狂暴模式退出]
-    C[先写 target_level=2]
-    D[切到 fan_mode=2]
+    C[先写 target_level=2 硬件档]
+    D[切到官方高速 fan_mode=schema.high]
     E[延迟 800ms]
     F[写回 fan_mode=-1]
     G[回到官方智能调频]
@@ -221,7 +227,8 @@ flowchart TD
     A --> B --> C --> D --> E --> F --> G
 ```
 
-该中转桥接用于解决少数情况下从狂暴模式切回智能调频后，风扇依旧长时间维持最高转速的问题。Settings 侧旧的 `fan_mode=4 -> fan_mode=2 -> fan_mode=-1` 桥接方案已验证无效，当前只保留 PowerKeeper 侧桥接。
+该中转桥接用于解决少数情况下从狂暴模式切回智能调频后，风扇依旧长时间维持最高转速的问题。
+`schema.high` 在云控对齐方案下为 **`0`**，在旧 Settings 序号下为 **`2`**；`target_level=2` 始终是硬件高速档，与 `fan_mode` 序号无关。Settings 侧旧桥接方案已验证无效，当前只保留 PowerKeeper 侧桥接。
 
 ---
 
@@ -317,10 +324,9 @@ real_speed
 
 作用：
 
-- 在风扇模式下拉列表中追加“狂暴模式”；
-- 追加 entryValue：`4`；
-- 追加 summary：`疾速冷却，最大幅度提升散热能力`；
-- 选择 `4` 时让 Settings 原生逻辑写入 `fan_mode=4`。
+- 在风扇模式下拉列表中追加“狂暴模式”（`4`）与“自定义”（UI `5`）；
+- 探测官方 `entryValues` 以确定 high/quiet 序号方案；
+- 选择 `4` 时让 Settings 原生逻辑写入 `fan_mode=4`；选择自定义走方案 B（底层 `fan_mode=-1`）。
 
 Settings 侧不负责实际写 `target_level`，也不负责狂暴退出桥接。
 
@@ -357,12 +363,12 @@ EXTREME_TO_SMART_PK_DELAY_MS = 800L
 
 作用：
 
-- 向控制中心散热风扇二级页模式列表追加 `identity=4` 的条目；
+- 向控制中心散热风扇二级页模式列表追加 `identity=4/5` 的条目；
 - 使用合法 fallback 资源，避免 `Resources$NotFoundException`；
-- 最终将该条目显示为“狂暴模式”；
-- 用户点击后由 SystemUI 原生逻辑写入 `fan_mode=4`。
+- 探测官方 `_secondaryItems` identity 以对齐 `OfficialFanModeSchema`；
+- 用户点击狂暴后由 SystemUI 原生逻辑写入 `fan_mode=4`；自定义走方案 B。
 
-SystemUI 侧只新增 `identity=4`，不改写官方原生 identity，避免官方档位错乱。
+SystemUI 侧只追加模块 identity，不改写官方原生 identity（对齐后一般为 `-1/0/1`），避免官方档位错乱。
 
 ---
 
@@ -390,13 +396,15 @@ com.mifan.kt
 com.android.settings
 com.miui.powerkeeper
 com.android.systemui
+com.xiaomi.misettings
 ```
 
 | 作用域 | 作用 |
 |---|---|
-| `com.android.settings` | 系统设置中显示“狂暴模式”和“息屏时保持风扇开启”开关 |
-| `com.miui.powerkeeper` | 实际下发狂暴档位、处理退出逻辑和息屏保持策略 |
-| `com.android.systemui` | 控制中心磁贴中显示“狂暴模式” |
+| `com.android.settings` | 系统设置中显示“狂暴模式 / 自定义”、息屏保持开关与按应用入口 |
+| `com.miui.powerkeeper` | 实际下发狂暴档位、分应用策略、退出桥接与息屏保持 |
+| `com.android.systemui` | 控制中心磁贴中显示“狂暴模式 / 自定义” |
+| `com.xiaomi.misettings` | 按应用风扇配置页宿主（高刷页复用） |
 
 ### 重启相关进程
 
@@ -494,12 +502,14 @@ PowerKeeper 进程执行 su 也存在权限限制
 
 ## 📐 维护原则
 
-1. Settings 侧只负责 UI 和 `fan_mode=4` 写入，不恢复 Settings 侧退出桥接。
-2. PowerKeeper 侧负责 `target_level=4` 下发、官方策略限制判断和狂暴退出桥接。
-3. SystemUI 侧只新增 `identity=4`，不改写官方原生档位。
-4. 不要把 `fan_mode=0` 当作智能调频；智能调频是 `fan_mode=-1`。
+1. Settings 侧只负责 UI 和模式写入，不恢复 Settings 侧退出桥接。
+2. PowerKeeper 侧负责 `target_level` 下发、官方策略限制判断和狂暴退出桥接。
+3. SystemUI 侧只追加模块 identity（4/5），不改写官方原生档位。
+4. 智能调频是 `fan_mode=-1`。在云控对齐方案下，`fan_mode=0` 是 **高速强冷**，不是智能调频，也不是“关闭”。
 5. 不要写 `target_level=-1`。
 6. 不要恢复“只要 fan_mode=4 就无条件写 4”的逻辑，否则会破坏官方总开关和使用范围。
+7. 反射类名/字段名基线在 `rom/RomTargets.kt`；官方序号适配在 `rom/OfficialFanModeSchema.kt`。
+8. 混淆符号优先经 DexKit（`HostDexResolver`）解析，失败再用 `RomTargets`；日志标签 `FanModeHook`。
 
 ---
 

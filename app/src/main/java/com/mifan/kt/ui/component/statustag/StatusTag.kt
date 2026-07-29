@@ -1,0 +1,15 @@
+package com.mifan.kt.ui.component.statustag
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+
+@Composable
+fun StatusTag(
+    label: String,
+    modifier: Modifier = Modifier,
+    backgroundColor: Color,
+    contentColor: Color,
+) {
+    StatusTagMiuix(label, modifier, backgroundColor, contentColor)
+}
