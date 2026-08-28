@@ -12,10 +12,75 @@ import com.mifan.kt.util.ReflectCache.findCachedField
 import com.mifan.kt.util.ReflectCache.findPublicOrDeclaredMethod
 import com.mifan.kt.util.ReflectCache.readFieldOrNull
 import com.mifan.kt.util.ReflectCache.readFirstCharSequenceArrayField
+import com.mifan.kt.util.ReflectCache.writeFieldIfExists
 import io.github.libxposed.api.XposedInterface
 import java.lang.ref.WeakReference
 import java.lang.reflect.Array as ReflectArray
 import java.lang.reflect.Method
+
+/**
+ * HyperOS 4 moved FanStateHandler from a named package to the obfuscated
+ * `r.h` class and renamed all of its instance fields. Keep the logical
+ * RomTargets names in hook code and resolve the OS4 aliases at runtime so the
+ * same module remains compatible with older PowerKeeper builds.
+ */
+private fun Any.isOs4PowerKeeperObject(): Boolean {
+    val name = javaClass.name
+    return name == RomTargets.FAN_STATE_HANDLER_OS4 ||
+        name.startsWith("${RomTargets.FAN_STATE_HANDLER_OS4}$") ||
+        javaClass.findCachedField("f5029o") != null ||
+        javaClass.findCachedField("f5020f") != null
+}
+
+private fun Any.readPowerKeeperField(logicalName: String): Any? {
+    val candidates = if (isOs4PowerKeeperObject()) {
+        listOfNotNull(RomTargets.POWERKEEPER_OS4_FIELD_ALIASES[logicalName], logicalName)
+    } else {
+        listOf(logicalName)
+    }
+    for (candidate in candidates.distinct()) {
+        val value = readFieldOrNull(candidate)
+        if (value != null) return value
+    }
+    return null
+}
+
+private fun Any.writePowerKeeperFieldIfExists(logicalName: String, value: Any?): Boolean {
+    val candidates = if (isOs4PowerKeeperObject()) {
+        listOfNotNull(RomTargets.POWERKEEPER_OS4_FIELD_ALIASES[logicalName], logicalName)
+    } else {
+        listOf(logicalName)
+    }
+    for (candidate in candidates.distinct()) {
+        if (javaClass.findCachedField(candidate) != null && writeFieldIfExists(candidate, value)) return true
+    }
+    return false
+}
+
+private fun findPowerKeeperMethod(owner: Class<*>, names: List<String>, vararg parameterTypes: Class<*>): Method? {
+    for (name in names.distinct()) {
+        val method = runCatching { owner.getDeclaredMethod(name, *parameterTypes) }.getOrNull()
+            ?: runCatching { owner.getMethod(name, *parameterTypes) }.getOrNull()
+        if (method != null) return method
+    }
+    return null
+}
+
+private fun findPowerKeeperStateClass(handlerClass: Class<*>, classLoader: ClassLoader): Class<*>? {
+    // Nested classes are the most reliable source on obfuscated builds.
+    handlerClass.declaredClasses.firstOrNull { nested ->
+        nested.declaredFields.any { it.name == "f5053g" || it.name == "f5047a" }
+    }?.let { return it }
+
+    val names = listOf(
+        "${handlerClass.name}\$${RomTargets.PK_STATE_INNER_CLASS}",
+        "${handlerClass.name}\$${RomTargets.PK_STATE_INNER_CLASS_OS4}",
+    )
+    for (name in names.distinct()) {
+        runCatching { classLoader.loadClass(name) }.getOrNull()?.let { return it }
+    }
+    return null
+}
 
 internal fun HookEntry.installPowerKeeperHooks(classLoader: ClassLoader, apkPath: String? = null) {
     val resolved = HostDexResolver.resolvePowerKeeper(apkPath) { logInfo(it) }
@@ -24,23 +89,38 @@ internal fun HookEntry.installPowerKeeperHooks(classLoader: ClassLoader, apkPath
             "handler=${resolved.handlerClass}, write=${resolved.writePathMethod}, " +
             "update=${resolved.updateStateMethod}, reload=${resolved.reloadSettingsMethod}"
     )
-    val handlerClass = classLoader.loadClass(resolved.handlerClass)
+    val handlerClass = sequenceOf(resolved.handlerClass, RomTargets.FAN_STATE_HANDLER_OS4)
+        .distinct()
+        .mapNotNull { name -> runCatching { classLoader.loadClass(name) }.getOrNull() }
+        .firstOrNull()
+    if (handlerClass == null) {
+        logError("PowerKeeper FanStateHandler class not found: ${resolved.handlerClass}", IllegalStateException("class not found"))
+        return
+    }
     logPowerKeeperProbe(classLoader, handlerClass)
-    val writePathMethod = handlerClass.getDeclaredMethod(
-        resolved.writePathMethod,
+    val writePathMethod = findPowerKeeperMethod(
+        handlerClass,
+        listOf(resolved.writePathMethod, RomTargets.METHOD_PK_WRITE_PATH, RomTargets.METHOD_PK_WRITE_PATH_OS4),
         String::class.java,
-        String::class.java
+        String::class.java,
     )
+    if (writePathMethod == null) {
+        logError("PowerKeeper target-level writer not found in ${handlerClass.name}", IllegalStateException("method not found"))
+        return
+    }
     writePathMethod.isAccessible = true
 
     // 官方会在 FanStateHandler.W(state) 中把息屏/锁屏视为高优先级禁用场景，
     // 非快充状态下最终写 target_level=0。开关开启时临时屏蔽 state.g(screenLock)，
     // 让智能调频/静谧/高速强冷/狂暴模式都继续走官方亮屏策略。
     runCatching {
-        val stateClass = classLoader.loadClass(
-            resolved.handlerClass + "$" + RomTargets.PK_STATE_INNER_CLASS
-        )
-        val updateFanState = handlerClass.getDeclaredMethod(resolved.updateStateMethod, stateClass)
+        val stateClass = findPowerKeeperStateClass(handlerClass, classLoader)
+            ?: error("FanState snapshot class not found")
+        val updateFanState = findPowerKeeperMethod(
+            handlerClass,
+            listOf(resolved.updateStateMethod, RomTargets.METHOD_PK_UPDATE_STATE, RomTargets.METHOD_PK_UPDATE_STATE_OS4),
+            stateClass,
+        ) ?: error("FanState update method not found")
         updateFanState.isAccessible = true
         hook(updateFanState).intercept(XposedInterface.Hooker { chain ->
             val handler = chain.thisObject
@@ -54,13 +134,13 @@ internal fun HookEntry.installPowerKeeperHooks(classLoader: ClassLoader, apkPath
                 val oldScreenLocked = readBooleanField(state, RomTargets.FIELD_PK_STATE_SCREEN_LOCK, false)
                 try {
                     if (oldScreenLocked) {
-                        state.writeFieldIfExists(RomTargets.FIELD_PK_STATE_SCREEN_LOCK, false)
-                        logInfo("Keep fan on screen off enabled; mask FanStateHandler state.g screenLock=false")
+                        state.writePowerKeeperFieldIfExists(RomTargets.FIELD_PK_STATE_SCREEN_LOCK, false)
+                        logInfo("Keep fan on screen off enabled; mask FanStateHandler screenLock=false")
                     }
                     chain.proceed()
                 } finally {
                     if (oldScreenLocked) {
-                        state.writeFieldIfExists(RomTargets.FIELD_PK_STATE_SCREEN_LOCK, oldScreenLocked)
+                        state.writePowerKeeperFieldIfExists(RomTargets.FIELD_PK_STATE_SCREEN_LOCK, oldScreenLocked)
                     }
                 }
             }
@@ -139,7 +219,10 @@ internal fun HookEntry.installPowerKeeperHooks(classLoader: ClassLoader, apkPath
     })
 
     // 初始化/重读系统设置时也补写一次，避免 PowerKeeper 重启后状态不同步。
-    val reloadSettings = handlerClass.getDeclaredMethod(resolved.reloadSettingsMethod)
+    val reloadSettings = findPowerKeeperMethod(
+        handlerClass,
+        listOf(resolved.reloadSettingsMethod, RomTargets.METHOD_PK_RELOAD_SETTINGS),
+    ) ?: error("PowerKeeper settings reload method not found")
     reloadSettings.isAccessible = true
     hook(reloadSettings).intercept(XposedInterface.Hooker { chain ->
         val result = chain.proceed()
@@ -170,18 +253,35 @@ internal fun HookEntry.shouldPromoteOfficialLevelToExtreme(handler: Any?, reques
 internal fun HookEntry.readPowerKeeperResolver(handler: Any?): ContentResolver? {
     FanSharedState.powerKeeperResolverRef?.get()?.let { return it }
     if (handler != null) {
-        val direct = handler.readFieldOrNull(RomTargets.FIELD_PK_RESOLVER_PRIMARY)
-            ?: handler.readFieldOrNull(RomTargets.FIELD_PK_RESOLVER_SECONDARY)
+        val direct = handler.readPowerKeeperField(RomTargets.FIELD_PK_RESOLVER_PRIMARY)
+            ?: handler.readPowerKeeperField(RomTargets.FIELD_PK_RESOLVER_SECONDARY)
         if (direct is ContentResolver) return rememberPowerKeeperResolver(direct)
 
+        // OS4's static context lives in r.a.f4957d; older builds expose it from
+        // the named corehandler base class. Try both, then scan the hierarchy.
         val classLoader = handler.javaClass.classLoader
-        val context = classLoader?.loadClass(RomTargets.POWERKEEPER_BASE_CLASS)
-            ?.getDeclaredField(RomTargets.FIELD_PK_BASE_CONTEXT)
-            ?.apply { isAccessible = true }
-            ?.get(null)
-        val method = context?.javaClass?.getMethod("getContentResolver")
-        val resolver = method?.invoke(context)
-        if (resolver is ContentResolver) return rememberPowerKeeperResolver(resolver)
+        val contextClasses = listOf(RomTargets.POWERKEEPER_BASE_CLASS, "r.a")
+        for (className in contextClasses) {
+            val context = runCatching {
+                classLoader?.loadClass(className)
+                    ?.getDeclaredField(RomTargets.FIELD_PK_BASE_CONTEXT)
+                    ?.apply { isAccessible = true }
+                    ?.get(null)
+            }.getOrNull()
+            val resolver = runCatching { context?.javaClass?.getMethod("getContentResolver")?.invoke(context) }.getOrNull()
+            if (resolver is ContentResolver) return rememberPowerKeeperResolver(resolver)
+        }
+        var current: Class<*>? = handler.javaClass
+        while (current != null) {
+            for (field in current.declaredFields) {
+                if (!java.lang.reflect.Modifier.isStatic(field.modifiers)) continue
+                if (!android.content.Context::class.java.isAssignableFrom(field.type)) continue
+                val context = runCatching { field.isAccessible = true; field.get(null) }.getOrNull()
+                val resolver = runCatching { context?.javaClass?.getMethod("getContentResolver")?.invoke(context) }.getOrNull()
+                if (resolver is ContentResolver) return rememberPowerKeeperResolver(resolver)
+            }
+            current = current.superclass
+        }
     }
     return null
 }
@@ -210,7 +310,7 @@ internal fun HookEntry.resolveCustomFanPolicy(handler: Any?): CustomFanPolicyDec
     val resolver = readPowerKeeperResolver(handler) ?: return CustomFanPolicyDecision()
     if (!isCustomFanModeSelected(resolver)) return CustomFanPolicyDecision()
 
-    val packageName = handler.readFieldOrNull(RomTargets.FIELD_PK_FOREGROUND_PACKAGE)
+    val packageName = handler.readPowerKeeperField(RomTargets.FIELD_PK_FOREGROUND_PACKAGE)
         ?.toString()
         ?.takeIf { it.isNotBlank() }
     val coolingFanEnabled = Settings.System.getInt(
@@ -324,14 +424,14 @@ internal fun HookEntry.resolveCustomFanPolicy(handler: Any?): CustomFanPolicyDec
 }
 
 internal fun HookEntry.isGameLikeSceneActive(handler: Any): Boolean {
-    val thermal = handler.readFieldOrNull(RomTargets.FIELD_PK_THERMAL)?.toString()
+    val thermal = handler.readPowerKeeperField(RomTargets.FIELD_PK_THERMAL)?.toString()
     return containsInSetField(handler, RomTargets.FIELD_PK_GAME_THERMAL_SET_A, thermal) ||
         containsInSetField(handler, RomTargets.FIELD_PK_GAME_THERMAL_SET_B, thermal)
 }
 
 internal fun HookEntry.isNavigationSceneActive(handler: Any, packageName: String): Boolean {
     if (!readBooleanField(handler, RomTargets.FIELD_PK_NAVIGATION_SCENE, false)) return false
-    val navigationApps = handler.readFieldOrNull(RomTargets.FIELD_PK_NAVIGATION_APPS)
+    val navigationApps = handler.readPowerKeeperField(RomTargets.FIELD_PK_NAVIGATION_APPS)
     return if (navigationApps is Map<*, *>) {
         navigationApps.containsKey(packageName)
     } else {
@@ -647,7 +747,7 @@ internal fun HookEntry.readPerAppFanRules(resolver: ContentResolver): Map<String
 internal fun HookEntry.isScreenOffOrLocked(handler: Any): Boolean {
     if (readBooleanField(handler, RomTargets.FIELD_PK_SCREEN_LOCKED, false)) return true
     return try {
-        val powerManager = handler.readFieldOrNull(RomTargets.FIELD_PK_POWER_MANAGER)
+        val powerManager = handler.readPowerKeeperField(RomTargets.FIELD_PK_POWER_MANAGER)
         val interactive = powerManager?.javaClass?.getMethod("isInteractive")?.invoke(powerManager) as? Boolean
         interactive == false
     } catch (_: Throwable) {
@@ -755,8 +855,8 @@ internal fun HookEntry.shouldForceExtremeLevel(handler: Any?): Boolean {
     // 使用范围为全场景/其它场景时，官方会走 other 场景；这里允许狂暴模式生效。
     if (range == 1) return true
 
-    val thermal = handler.readFieldOrNull(RomTargets.FIELD_PK_THERMAL)?.toString()
-    val foregroundPackage = handler.readFieldOrNull(RomTargets.FIELD_PK_FOREGROUND_PACKAGE)?.toString()
+    val thermal = handler.readPowerKeeperField(RomTargets.FIELD_PK_THERMAL)?.toString()
+    val foregroundPackage = handler.readPowerKeeperField(RomTargets.FIELD_PK_FOREGROUND_PACKAGE)?.toString()
     val gameLikeScene = containsInSetField(handler, RomTargets.FIELD_PK_GAME_THERMAL_SET_A, thermal) ||
         containsInSetField(handler, RomTargets.FIELD_PK_GAME_THERMAL_SET_B, thermal)
     // Align extreme mode with official modes: entering a navigation app alone is not enough.
@@ -782,15 +882,15 @@ internal fun HookEntry.writeTargetLevelByPowerKeeper(
     if (handler == null) return
     try {
         val ok = writePathMethod.invoke(handler, FanModeConstants.TARGET_LEVEL, level.toString())
-        writeIntFieldIfExists(handler, RomTargets.FIELD_PK_TARGET_LEVEL, level)
-        logInfo("$reason by PowerKeeper J(target_level, $level), result=$ok")
+        handler.writePowerKeeperFieldIfExists(RomTargets.FIELD_PK_TARGET_LEVEL, level)
+        logInfo("$reason by PowerKeeper target-level writer ($level), result=$ok")
     } catch (t: Throwable) {
         logError("Apply target_level=$level by PowerKeeper failed", t)
     }
 }
 
 internal fun HookEntry.readIntField(target: Any, fieldName: String, defaultValue: Int): Int {
-    val value = target.readFieldOrNull(fieldName)
+    val value = target.readPowerKeeperField(fieldName)
     return when (value) {
         is Int -> value
         is Number -> value.toInt()
@@ -799,35 +899,35 @@ internal fun HookEntry.readIntField(target: Any, fieldName: String, defaultValue
 }
 
 internal fun HookEntry.readBooleanField(target: Any, fieldName: String, defaultValue: Boolean): Boolean {
-    val value = target.readFieldOrNull(fieldName)
+    val value = target.readPowerKeeperField(fieldName)
     return value as? Boolean ?: defaultValue
 }
 
 internal fun HookEntry.containsInSetField(target: Any, fieldName: String, value: String?): Boolean {
     if (value == null) return false
-    return (target.readFieldOrNull(fieldName) as? Set<*>)?.contains(value) == true
+    return (target.readPowerKeeperField(fieldName) as? Set<*>)?.contains(value) == true
 }
 
 internal fun HookEntry.containsKeyInMapField(target: Any, fieldName: String, key: String?): Boolean {
     if (key == null) return false
-    return (target.readFieldOrNull(fieldName) as? Map<*, *>)?.containsKey(key) == true
+    return (target.readPowerKeeperField(fieldName) as? Map<*, *>)?.containsKey(key) == true
 }
 
 internal fun HookEntry.logPowerKeeperProbe(classLoader: ClassLoader, handlerClass: Class<*>) {
     val messageClass = runCatching { classLoader.loadClass("android.os.Message") }.getOrNull()
-    val stateClass = runCatching { classLoader.loadClass(RomTargets.FAN_STATE_HANDLER + "$" + "g") }.getOrNull()
+    val stateClass = findPowerKeeperStateClass(handlerClass, classLoader)
     val checks = mutableListOf<Pair<String, Boolean>>()
-    checks += "FanStateHandler" to true
-    checks += "state class g" to (stateClass != null)
-    checks += "method J" to handlerClass.hasMethodCached("J", String::class.java, String::class.java)
-    checks += "method W" to (stateClass?.let { handlerClass.hasMethodCached("W", it) } == true)
+    checks += "FanStateHandler ${handlerClass.name}" to true
+    checks += "state snapshot class" to (stateClass != null)
+    checks += "method target-level writer" to listOf("J", "K").any { handlerClass.hasMethodCached(it, String::class.java, String::class.java) }
+    checks += "method state update" to (stateClass?.let { listOf("W", "X").any { name -> handlerClass.hasMethodCached(name, it) } } == true)
     checks += "method handleMessage" to (messageClass?.let { handlerClass.hasMethodCached("handleMessage", it) } == true)
     checks += "method o" to handlerClass.hasMethodCached("o")
-    for (field in arrayOf("g", "h", "x", "p", "w", "y", "z", "A", "B", "C", "D", "F", "L", "M", "N", "m0", "h0", "l")) {
+    for (field in arrayOf("g", "h", "x", "p", "w", "y", "z", "A", "B", "C", "D", "F", "L", "M", "N", "m0", "h0", "l", "f5020f", "f5029o", "f5037w", "f5038x")) {
         checks += "field $field" to handlerClass.hasFieldCached(field)
     }
     if (stateClass != null) {
-        checks += "state field g" to stateClass.hasFieldCached("g")
+        checks += "state screen-lock field" to (stateClass.hasFieldCached("g") || stateClass.hasFieldCached("f5053g"))
     }
     logProbe("PowerKeeper FanStateHandler probe", checks)
 }

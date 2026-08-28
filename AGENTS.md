@@ -2,25 +2,54 @@
 
 ## Project Structure & Module Organization
 
-This is a single-module Android LSPosed project. `app/` contains the application; Kotlin sources live in `app/src/main/java/com/mifan/kt/`. `HookEntry.kt` routes host packages, `hooks/` installs Settings, PowerKeeper, and SystemUI hooks, and `rom/` owns ROM-specific reflection and DexKit resolution. Keep policy helpers in `policy/`, shared utilities in `util/`, data types in `data/`, and Compose/MIUIX screens in `ui/`. Android resources are under `app/src/main/res/`; LSPosed metadata is under `app/src/main/resources/META-INF/xposed/`. Build helpers are in `scripts/`; release shrinker rules are `app/proguard-rules.pro`.
+This repository is a single Android/Xposed module. Kotlin sources live in
+`app/src/main/java/com/mifan/kt`, grouped by responsibility: `hooks/` contains
+host-process hooks, `rom/` contains ROM symbol resolution and compatibility
+tables, `policy/` contains fan-policy helpers, and `ui/` contains the Compose
+configuration screen. Android resources and the module manifest are under
+`app/src/main/res` and `app/src/main/AndroidManifest.xml`. Build helpers are in
+`scripts/`; generated APKs belong in `app/build/` and should not be committed.
 
 ## Build, Test, and Development Commands
 
-- `bash scripts/build-debug.sh` builds the debug APK using the workspace-local JDK 17, Android SDK, and Gradle cache.
-- `bash scripts/gradle.sh :app:lintDebug` runs Android Lint for the debug variant.
-- `bash scripts/gradle.sh :app:testDebugUnitTest` runs debug unit tests when tests are added.
-- `bash scripts/gradle.sh :app:assembleRelease` builds a release APK. It requires the ignored `app/release-key.jks` and `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_PASSWORD`, and optionally `RELEASE_KEY_ALIAS`.
+Run these commands from the repository root:
 
-For a standalone checkout, copy `local.properties.example` to `local.properties` and configure the local SDK before using `./gradlew`. Do not commit local SDK paths, signing material, APKs, logs, or build output.
+- `bash scripts/build-debug.sh` builds and assembles the debug Xposed APK.
+- `bash scripts/gradle.sh :app:compileDebugKotlin` performs a fast Kotlin
+  compilation check.
+- `bash scripts/gradle.sh :app:testDebugUnitTest` runs the local unit tests.
+- `bash scripts/gradle.sh :app:lintDebug` checks Android/Kotlin lint rules.
+
+The scripts select the project-local Gradle/toolchain setup, so prefer them to
+invoking a system `gradle` binary directly.
 
 ## Coding Style & Naming Conventions
 
-Use four-space Kotlin indentation, `PascalCase` for types and files, `camelCase` for functions and properties, and `UPPER_SNAKE_CASE` for constants. Prefer narrow `internal` visibility and preserve defensive reflection and logging around host APIs. Centralize host class, field, and method names in `rom/RomTargets.kt`; keep module constants and Settings keys in `FanModeConstants.kt`. No formatter or static-style tool is configured, so avoid unrelated reformatting and add KDoc for compatibility-sensitive behavior.
+Use four-space indentation, Kotlin official formatting, and trailing commas in
+multiline declarations. Classes and objects use `PascalCase`; functions,
+properties, and test names use `camelCase`; constants use `UPPER_SNAKE_CASE`.
+Keep host-specific class, field, and method names in `rom/RomTargets.kt` (or a
+resolver) instead of scattering string literals through hook logic. Run lint
+and compilation before submitting changes.
 
 ## Testing Guidelines
 
-No unit or instrumentation tests are currently checked in. Every change must at least pass the debug build and `lintDebug`. For hook, policy, or ROM-compatibility changes, validate on a scoped HyperOS device with LSPosed enabled for Settings, PowerKeeper, and SystemUI. Exercise the affected fan-mode flow and include relevant logcat evidence; attach screenshots for Compose/UI changes.
+Unit tests use JUnit through the Android Gradle plugin. Name tests after the
+behavior they verify (for example, `customModeRespectsMasterSwitch`). Add
+regression coverage for policy decisions and reflection fallbacks whenever a
+ROM version changes, then run `:app:testDebugUnitTest`.
 
 ## Commit & Pull Request Guidelines
 
-Use concise, imperative English subjects, matching history: `Fix PowerKeeper hook regression`, `Add per-app rule storage`, or `Update release notes`. Keep commits focused. Pull requests should state the affected host packages and ROM/device, list build and device-validation results, link the issue when applicable, and call out metadata, scope, ProGuard, permission, or signing changes. Treat commands in `IMICHARGE_COMMANDS.md` as device-mutating operations and run them only on a disposable test device.
+Use short, imperative commit subjects such as `Fix custom fan policy switch
+handling`; keep unrelated changes in separate commits. Pull requests should
+explain the affected host process/ROM version, describe manual verification,
+link an issue when one exists, and include screenshots or log excerpts for UI
+or hook-behavior changes. Do not commit OTA packages, extracted system images,
+APK dumps, or build outputs.
+
+## Security & Configuration Tips
+
+Fan hooks run inside privileged system processes. Treat reflected values as
+untrusted: guard lookups with `runCatching`, preserve original behavior when a
+symbol is absent, and avoid logging user data or package lists unnecessarily.

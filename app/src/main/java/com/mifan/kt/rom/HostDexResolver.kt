@@ -82,7 +82,7 @@ internal object HostDexResolver {
         var source = "RomTargets"
 
         runCatching {
-            val classes = bridge.findClass {
+            var classes = bridge.findClass {
                 searchPackages("com.miui.powerkeeper")
                 matcher {
                     usingStrings(
@@ -91,8 +91,20 @@ internal object HostDexResolver {
                     )
                 }
             }
+            // HyperOS 4 (Android 17) relocates the obfuscated FanStateHandler
+            // to package r.h, so a package-scoped query returns no candidates.
+            if (classes.isEmpty()) {
+                classes = bridge.findClass {
+                    matcher {
+                        usingStrings(
+                            listOf("target_level", "fan_mode", "FanStateHandler"),
+                            StringMatchType.Contains,
+                        )
+                    }
+                }
+            }
             val preferred = classes.firstOrNull {
-                it.name.endsWith("FanStateHandler") || it.name.contains("FanState")
+                it.name.endsWith("FanStateHandler") || it.name.contains("FanState") || it.name == RomTargets.FAN_STATE_HANDLER_OS4
             } ?: classes.singleOrNull()
             if (preferred != null) {
                 handlerClass = preferred.name
@@ -106,12 +118,21 @@ internal object HostDexResolver {
         }
 
         runCatching {
-            val methods = bridge.findMethod {
+            var methods = bridge.findMethod {
                 searchPackages("com.miui.powerkeeper")
                 matcher {
                     declaredClass = handlerClass
                     paramTypes("java.lang.String", "java.lang.String")
                     returnType = "boolean"
+                }
+            }
+            if (methods.isEmpty()) {
+                methods = bridge.findMethod {
+                    matcher {
+                        declaredClass = handlerClass
+                        paramTypes("java.lang.String", "java.lang.String")
+                        returnType = "boolean"
+                    }
                 }
             }
             // Prefer a short/obfuscated name (e.g. J) that takes (String,String) and returns boolean.
@@ -127,13 +148,22 @@ internal object HostDexResolver {
         }
 
         runCatching {
-            val methods = bridge.findMethod {
+            var methods = bridge.findMethod {
                 searchPackages("com.miui.powerkeeper")
                 matcher {
                     declaredClass = handlerClass
                     paramCount = 1
                     // W(state) updates fan policy from a state object.
                     modifiers = Modifier.PRIVATE
+                }
+            }
+            if (methods.isEmpty()) {
+                methods = bridge.findMethod {
+                    matcher {
+                        declaredClass = handlerClass
+                        paramCount = 1
+                        modifiers = Modifier.PRIVATE
+                    }
                 }
             }
             // Keep reverse-dump default unless we find a unique private 1-arg method named like W.
@@ -149,13 +179,22 @@ internal object HostDexResolver {
         }
 
         runCatching {
-            val methods = bridge.findMethod {
+            var methods = bridge.findMethod {
                 searchPackages("com.miui.powerkeeper")
                 matcher {
                     declaredClass = handlerClass
                     paramCount = 0
                     modifiers = Modifier.PRIVATE
                     name = RomTargets.METHOD_PK_RELOAD_SETTINGS
+                }
+            }
+            if (methods.isEmpty()) {
+                methods = bridge.findMethod {
+                    matcher {
+                        declaredClass = handlerClass
+                        paramCount = 0
+                        usingStrings(listOf("fan_mode", "cooling_fan_enable"), StringMatchType.Contains)
+                    }
                 }
             }
             val hit = methods.singleOrNull()

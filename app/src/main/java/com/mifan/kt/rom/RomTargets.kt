@@ -19,6 +19,8 @@ internal object RomTargets {
 
     // --- PowerKeeper ---
     const val FAN_STATE_HANDLER = "com.miui.powerkeeper.unionpower.corehandler.FanStateHandler"
+    /** HyperOS 4 (Android 17) keeps FanStateHandler in the obfuscated r.h class. */
+    const val FAN_STATE_HANDLER_OS4 = "r.h"
     const val POWERKEEPER_BASE_CLASS = "com.miui.powerkeeper.unionpower.corehandler.a"
     const val FIELD_PK_BASE_CONTEXT = "d"
     const val FIELD_PK_RESOLVER_PRIMARY = "g"
@@ -42,10 +44,38 @@ internal object RomTargets {
     const val FIELD_PK_GAME_THERMAL_SET_B = "l0"
     const val FIELD_PK_POWER_MANAGER = "h0"
     const val FIELD_PK_STATE_SCREEN_LOCK = "g"
+
+    /** HyperOS 4 r.h field aliases keyed by the logical legacy field names above. */
+    val POWERKEEPER_OS4_FIELD_ALIASES: Map<String, String> = mapOf(
+        FIELD_PK_RESOLVER_PRIMARY to "f5020f",
+        FIELD_PK_RESOLVER_SECONDARY to "f5021g",
+        FIELD_PK_TARGET_LEVEL to "f5029o",
+        FIELD_PK_SCREEN_LOCKED to "K",
+        FIELD_PK_RECORDING_ACTIVE to "E",
+        FIELD_PK_SIM_CALL_ACTIVE to "T",
+        FIELD_PK_EARPIECE_ACTIVE to "M",
+        FIELD_PK_MIC_SWITCH to "A",
+        FIELD_PK_FAST_CHARGE_ACTIVE to "B",
+        FIELD_PK_NAVIGATION_SCENE to "C",
+        FIELD_PK_GAME_SWITCH to "f5038x",
+        FIELD_PK_CHARGE_SWITCH to "f5039y",
+        FIELD_PK_NAVIGATION_SWITCH to "f5040z",
+        FIELD_PK_FAN_MODE_RANGE to "f5025k",
+        FIELD_PK_NAVIGATION_APPS to "n0",
+        FIELD_PK_FOREGROUND_PACKAGE to "f5037w",
+        FIELD_PK_THERMAL to "f5036v",
+        FIELD_PK_GAME_THERMAL_SET_A to "l0",
+        FIELD_PK_GAME_THERMAL_SET_B to "m0",
+        FIELD_PK_POWER_MANAGER to "i0",
+        FIELD_PK_STATE_SCREEN_LOCK to "f5053g",
+    )
     const val METHOD_PK_WRITE_PATH = "J"
+    const val METHOD_PK_WRITE_PATH_OS4 = "K"
     const val METHOD_PK_UPDATE_STATE = "W"
+    const val METHOD_PK_UPDATE_STATE_OS4 = "X"
     const val METHOD_PK_RELOAD_SETTINGS = "o"
     const val PK_STATE_INNER_CLASS = "g"
+    const val PK_STATE_INNER_CLASS_OS4 = "h"
 
     // --- SystemUI ---
     const val SYSTEMUI_COOLING_FAN_CONTROLLER = "com.android.systemui.controlcenter.policy.CoolingFanController"
