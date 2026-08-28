@@ -87,6 +87,11 @@ internal object RomTargets {
     const val SYSTEMUI_SELECTABLE_MODEL = "com.miui.systemui.controlcenter.secondary.model.SelectableItem"
     const val SYSTEMUI_COOLING_FAN_TRACK = "com.miui.systemui.controlcenter.secondary.model.CoolingFanTrack"
     const val FIELD_SU_SECONDARY_ITEMS = "_secondaryItems"
+    /** HyperOS 4 stores the lazy source and its mode-aware cache separately. */
+    const val FIELD_SU_SECONDARY_ITEMS_DELEGATE = "_secondaryItems\$delegate"
+    const val FIELD_SU_CACHED_ITEMS = "cachedItems"
+    const val FIELD_SU_CACHED_FAN_MODE = "cachedFanMode"
+    const val FIELD_SU_ITEMS_LOCK = "itemsLock"
     const val FIELD_SU_FAN_MODE_STATE = "fanModeState"
     const val FIELD_SU_TOGGLE_STATE = "toggleState"
     const val FIELD_SU_COOLING_CONTROLLER = "coolingFanController"

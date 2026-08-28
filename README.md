@@ -282,7 +282,9 @@ com.android.systemui.qs.tiles.CoolingFanTile
 com.android.systemui.qs.tiles.CoolingFanTile$CoolingFanDetailAdapter
 ```
 
-控制中心二级页使用 `_secondaryItems` 作为模式列表，点击条目后会把 `SelectableItem.identity` 写入 `Settings.System["fan_mode"]`。
+控制中心二级页在 HyperOS 3 直接使用 `_secondaryItems`，HyperOS 4 则通过
+`_secondaryItems$delegate` 生成并缓存到 `cachedItems`；点击条目后都会把
+`SelectableItem.identity` 写入 `Settings.System["fan_mode"]`。模块会同时兼容这两种结构。
 
 ### 底层节点探索
 
@@ -365,7 +367,7 @@ EXTREME_TO_SMART_PK_DELAY_MS = 800L
 
 - 向控制中心散热风扇二级页模式列表追加 `identity=4/5` 的条目；
 - 使用合法 fallback 资源，避免 `Resources$NotFoundException`；
-- 探测官方 `_secondaryItems` identity 以对齐 `OfficialFanModeSchema`；
+- 探测官方 `_secondaryItems` identity（OS4 从 `_secondaryItems$delegate`/`cachedItems` 读取）以对齐 `OfficialFanModeSchema`；
 - 用户点击狂暴后由 SystemUI 原生逻辑写入 `fan_mode=4`；自定义走方案 B。
 
 SystemUI 侧只追加模块 identity，不改写官方原生 identity（对齐后一般为 `-1/0/1`），避免官方档位错乱。
