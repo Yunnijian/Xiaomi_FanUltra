@@ -19,6 +19,11 @@ Run these commands from the repository root:
   compilation check.
 - `bash scripts/gradle.sh :app:testDebugUnitTest` runs the local unit tests.
 - `bash scripts/gradle.sh :app:lintDebug` checks Android/Kotlin lint rules.
+- `bash scripts/gradle.sh :app:assembleRelease` builds the minified,
+  resource-shrunk release APK. Supply `RELEASE_STORE_FILE` (optional),
+  `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_PASSWORD`, and `RELEASE_KEY_ALIAS`
+  for a distributable signature; without them, local release verification uses
+  the debug keystore.
 
 The scripts select the project-local Gradle/toolchain setup, so prefer them to
 invoking a system `gradle` binary directly.

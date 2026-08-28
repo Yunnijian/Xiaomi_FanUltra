@@ -10,6 +10,21 @@ val releaseKeyPassword: String =
     (findProperty("RELEASE_KEY_PASSWORD") as String?) ?: System.getenv("RELEASE_KEY_PASSWORD") ?: ""
 val releaseKeyAlias: String =
     (findProperty("RELEASE_KEY_ALIAS") as String?) ?: System.getenv("RELEASE_KEY_ALIAS") ?: "mifan_release"
+val releaseStoreFilePath: String =
+    (findProperty("RELEASE_STORE_FILE") as String?) ?: System.getenv("RELEASE_STORE_FILE") ?: "release-key.jks"
+val releaseStoreFile = file(releaseStoreFilePath)
+val hasReleaseSigningCredentials = releaseStoreFile.isFile &&
+    releaseStorePassword.isNotBlank() &&
+    releaseKeyPassword.isNotBlank() &&
+    releaseKeyAlias.isNotBlank()
+
+if (!hasReleaseSigningCredentials) {
+    logger.lifecycle(
+        "Release signing credentials are unavailable; using the debug keystore for this local " +
+            "release build. Provide RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, " +
+            "RELEASE_KEY_PASSWORD, and RELEASE_KEY_ALIAS for a distributable signature."
+    )
+}
 
 android {
     compileOptions {
@@ -49,10 +64,12 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = file("release-key.jks")
-            storePassword = releaseStorePassword
-            keyAlias = releaseKeyAlias
-            keyPassword = releaseKeyPassword
+            if (hasReleaseSigningCredentials) {
+                storeFile = releaseStoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
 
@@ -64,7 +81,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            // Keep local release verification usable when the ignored signing key is absent or
+            // its credentials are not available. CI/distribution builds still use the release key.
+            signingConfig = if (hasReleaseSigningCredentials) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
